@@ -19,7 +19,9 @@ from wa_cloud_py.messages.types import (
 import logging
 import uvicorn
 import asyncio
-import time
+import inspect
+from typing import List, Tuple, Optional
+from openpyxl import load_workbook
 
 
 load_dotenv()
@@ -60,6 +62,49 @@ whatsapp = WhatsApp(access_token=ACCESS_TOKEN, phone_number_id=PHONE_NUMBER_ID)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+EXCEL_RETAILER_FILE = "spectrax_retailer_ids.xlsx"
+
+
+def _read_ids_from_sheet(workbook, sheet_name: str) -> List[str]:
+    """Read first-column values from a sheet, skipping header and placeholders."""
+    ids: List[str] = []
+    if sheet_name not in workbook.sheetnames:
+        return ids
+    ws = workbook[sheet_name]
+    for row in ws.iter_rows(min_row=1, max_col=1, values_only=True):
+        val = row[0]
+        if not val:
+            continue
+        s = str(val).strip()
+        if not s or s.lower() == "retailer_id" or s.lower() == "(none configured)":
+            continue
+        ids.append(s)
+    return ids
+
+
+def load_retailer_ids_from_excel(filepath: str = EXCEL_RETAILER_FILE) -> Tuple[List[str], List[str]]:
+    """Return (laptop_ids, repair_ids). If file not found or empty, return empty lists."""
+    if not os.path.exists(filepath):
+        logger.info("Retailer Excel not found at %s, will fall back to environment variables", filepath)
+        return [], []
+    try:
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+    except Exception as exc:
+        logger.exception("Failed to open retailer Excel %s: %s", filepath, exc)
+        return [], []
+    laptop_ids = _read_ids_from_sheet(wb, "Laptops")
+    repair_ids = _read_ids_from_sheet(wb, "Repairs")
+    return laptop_ids, repair_ids
+
+
+def _env_retailer_ids(*keys: str) -> List[str]:
+    ids = []
+    for k in keys:
+        v = os.getenv(k)
+        if v and v.strip():
+            ids.append(v.strip())
+    return ids
+
 
 def safe_mark_as_read(message_id: str):
     """Safely mark a WhatsApp message as read; swallow and log errors from the API.
@@ -69,10 +114,11 @@ def safe_mark_as_read(message_id: str):
     ID raises an OAuthException; we log it and continue so the webhook stays healthy.
     """
     try:
-        whatsapp.mark_as_read(message_id)
+        # attempt to mark as read if API exists
+        if hasattr(whatsapp, "mark_as_read"):
+            whatsapp.mark_as_read(message_id=message_id)
     except Exception as exc:
-        # Log full exception for debugging but don't raise — webhook should respond 200
-        logger.warning("Failed to mark message with ID %s as read. Reason: %s", message_id, str(exc))
+        logger.exception("Failed to mark message %s as read: %s", message_id, exc)
 
 
 @app.get("/")
@@ -244,13 +290,33 @@ def handle_browse_laptops(phone_number):
     send_buy_repairs_buttons(phone_number)
 
 
-def handle_buy_laptops(phone_number: str):
-    """Send a single product_list catalog message containing the configured laptop products."""
-    retailer_ids = [PRODUCT_RETAILER_ID, PRODUCT_RETAILER_ID_2]
-    retailer_ids = [rid for rid in retailer_ids if rid]
+# Delegate catalog handling to separate modules
+try:
+    from laptops import handle_buy_laptops as _handle_buy_laptops_module
+    from repairs import handle_repairs as _handle_repairs_module
+except Exception:
+    _handle_buy_laptops_module = None
+    _handle_repairs_module = None
 
-    if not retailer_ids:
-        whatsapp.send_text(to=phone_number, body="No laptop products configured. Please contact support.")
+
+def handle_buy_laptops(phone_number: str):
+    """Delegate to laptops module if available, otherwise fall back to inline implementation."""
+    if _handle_buy_laptops_module:
+        return _handle_buy_laptops_module(whatsapp, phone_number, catalog_id=CATALOG_ID)
+
+    # Fallback: load laptop IDs from separate Excel file
+    from catalog_utils import load_laptop_retailer_ids
+    laptop_ids = load_laptop_retailer_ids()
+    if not laptop_ids:
+        laptop_ids = _env_retailer_ids("PRODUCT_RETAILER_ID", "PRODUCT_RETAILER_ID_2")
+
+    if not laptop_ids:
+        logger.warning("No laptop retailer IDs configured (env or excel)")
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body="No laptops are configured right now. Contact support to add products.",
+            buttons=[ReplyButton(id="contact_support", title="Contact Support")],
+        )
         return
 
     header = "SpectraX Laptop Catalog"
@@ -258,39 +324,45 @@ def handle_buy_laptops(phone_number: str):
     footer = "Tap a laptop to view details & order."
 
     try:
-        wa_section = CatalogSection(title="Featured Laptops", retailer_product_ids=retailer_ids)
-        whatsapp.send_catalog_product_list(
+        # Use the safe catalog compatibility function
+        from catalog_utils import send_catalog_compat
+        send_catalog_compat(
+            whatsapp=whatsapp,
             to=phone_number,
-            catalog_id=CATALOG_ID,
+            retailer_ids=laptop_ids,
             header=header,
             body=body,
-            product_sections=[wa_section],
             footer=footer,
+            catalog_id=CATALOG_ID,
+            fallback_button_id="browse_laptops"
         )
     except Exception as exc:
-        logger.warning("send_catalog_product_list failed for laptops: %s", str(exc))
-        # fallback: send individual product messages
-        for rid in retailer_ids:
-            try:
-                whatsapp.send_catalog_product(
-                    to=phone_number,
-                    product_retailer_id=rid,
-                    catalog_id=CATALOG_ID,
-                    body="💻 Tap to view details & order.",
-                    footer=footer,
-                )
-            except Exception as e:
-                logger.warning("Fallback send_catalog_product failed for %s: %s", rid, str(e))
-        whatsapp.send_catalog(to=phone_number, body="💻 Browse our laptop collection:", footer=footer)
+        logger.exception("Failed sending laptop catalog: %s", exc)
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body="Sorry, something went wrong while fetching the catalog. Try again later.",
+            buttons=[ReplyButton(id="try_again", title="Try Again")],
+        )
 
 
 def handle_repairs(phone_number: str):
-    """Send a single product_list catalog message containing the configured repair products."""
-    repair_ids = [PRODUCT_RETAILER_ID_REPAIR, PRODUCT_RETAILER_ID_REPAIR_2]
-    repair_ids = [rid for rid in repair_ids if rid]
+    """Delegate to repairs module if available, otherwise fall back to inline implementation."""
+    if _handle_repairs_module:
+        return _handle_repairs_module(whatsapp, phone_number, catalog_id=CATALOG_ID)
+
+    # Fallback: load repair IDs from separate Excel file
+    from catalog_utils import load_repair_retailer_ids
+    repair_ids = load_repair_retailer_ids()
+    if not repair_ids:
+        repair_ids = _env_retailer_ids("PRODUCT_RETAILER_ID_REPAIR", "PRODUCT_RETAILER_ID_REPAIR_2")
 
     if not repair_ids:
-        whatsapp.send_text(to=phone_number, body="No repair products configured. Please contact support.")
+        logger.warning("No repair retailer IDs configured (env or excel)")
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body="No repair packages are configured right now. Contact support to add products.",
+            buttons=[ReplyButton(id="contact_support", title="Contact Support")],
+        )
         return
 
     header = "SpectraX Repair Packages"
@@ -298,30 +370,25 @@ def handle_repairs(phone_number: str):
     footer = "Tap a repair package to view details & book."
 
     try:
-        wa_section = CatalogSection(title="Repairs & Services", retailer_product_ids=repair_ids)
-        whatsapp.send_catalog_product_list(
+        # Use the safe catalog compatibility function
+        from catalog_utils import send_catalog_compat
+        send_catalog_compat(
+            whatsapp=whatsapp,
             to=phone_number,
-            catalog_id=CATALOG_ID,
+            retailer_ids=repair_ids,
             header=header,
             body=body,
-            product_sections=[wa_section],
             footer=footer,
+            catalog_id=CATALOG_ID,
+            fallback_button_id="browse_repairs"
         )
     except Exception as exc:
-        logger.warning("send_catalog_product_list failed for repairs: %s", str(exc))
-        # fallback: send individual product messages
-        for rid in repair_ids:
-            try:
-                whatsapp.send_catalog_product(
-                    to=phone_number,
-                    product_retailer_id=rid,
-                    catalog_id=CATALOG_ID,
-                    body="🛠 Tap to view details & book.",
-                    footer=footer,
-                )
-            except Exception as e:
-                logger.warning("Fallback send_catalog_product failed for %s: %s", rid, str(e))
-        whatsapp.send_text(to=phone_number, body="Repairs items unavailable right now. Please contact support.")
+        logger.exception("Failed sending repair catalog: %s", exc)
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body="Sorry, something went wrong while fetching repair packages. Try again later.",
+            buttons=[ReplyButton(id="try_again", title="Try Again")],
+        )
 
 
 def send_why_spectrax_message(phone_number: str):
