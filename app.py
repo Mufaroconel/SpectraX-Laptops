@@ -455,6 +455,10 @@ async def receive_message(request: Request):
             elif user_choice == "action_repairs":
                 handle_repairs(phone_number)
             # Admin button handlers
+            elif user_choice == "admin_catalog_management":
+                send_admin_catalog_menu(phone_number)
+            elif user_choice == "admin_order_management":
+                send_admin_order_menu(phone_number)
             elif user_choice == "admin_manage_catalog":
                 send_admin_catalog_menu(phone_number)
             elif user_choice == "admin_view_stats":
@@ -472,6 +476,17 @@ async def receive_message(request: Request):
                     send_admin_welcome_message(phone_number)
                 else:
                     send_welcome_message(phone_number)
+            # Order management handlers (placeholders for now)
+            elif user_choice == "admin_recent_orders":
+                send_admin_recent_orders(phone_number)
+            elif user_choice == "admin_order_status":
+                send_admin_order_status_menu(phone_number)
+            elif user_choice == "admin_customer_comm":
+                send_admin_customer_comm_menu(phone_number)
+            elif user_choice == "admin_order_analytics":
+                send_admin_order_analytics(phone_number)
+            elif user_choice == "admin_delivery_tracking":
+                send_admin_delivery_tracking(phone_number)
 
         elif isinstance(message, OrderMessage):
             # Mark order message as read (safe)
@@ -639,14 +654,14 @@ Welcome back, Admin! 👋
     except:
         message += "📊 Loading product counts...\n\n"
     
-    message += "**Management Options:**"
+    message += "**Management Areas:**"
     
     whatsapp.send_interactive_buttons(
         to=phone_number,
         body=message,
         buttons=[
-            ReplyButton(id="admin_manage_catalog", title="📝 Manage Catalog"),
-            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ReplyButton(id="admin_catalog_management", title="📝 Catalog Management"),
+            ReplyButton(id="admin_order_management", title="� Order Management"),
             ReplyButton(id="browse_laptops", title="👀 Preview Store"),
         ],
     )
@@ -656,15 +671,15 @@ def send_admin_catalog_menu(phone_number: str):
     """Send admin catalog management menu"""
     message = """📝 **Catalog Management**
 
-Choose what you'd like to manage:
+Manage your product catalog:
 
-**Add Products:**
+**Product Management:**
 • Add new laptop retailer IDs
 • Add new repair service IDs
+• Remove existing products
+• View all current products
 
-**Remove Products:**
-• Remove existing laptop IDs
-• Remove existing repair IDs"""
+**Quick Actions:**"""
     
     whatsapp.send_interactive_buttons(
         to=phone_number,
@@ -673,6 +688,56 @@ Choose what you'd like to manage:
             ReplyButton(id="admin_add_laptop", title="➕ Add Laptop"),
             ReplyButton(id="admin_add_repair", title="➕ Add Repair"),
             ReplyButton(id="admin_remove_laptop", title="➖ Remove Laptop"),
+        ],
+    )
+    
+    # Send second set of buttons
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body="**More Options:**",
+        buttons=[
+            ReplyButton(id="admin_remove_repair", title="➖ Remove Repair"),
+            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ReplyButton(id="admin_back_main", title="⬅️ Back to Main"),
+        ],
+    )
+
+
+def send_admin_order_menu(phone_number: str):
+    """Send admin order management menu"""
+    message = """📦 **Order Management**
+
+Manage customer orders and services:
+
+**Order Status:**
+• View recent orders
+• Update order status
+• Track deliveries
+• Manage repairs
+
+**Customer Communication:**
+• Send status updates
+• Handle inquiries
+• Process refunds"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_recent_orders", title="📋 Recent Orders"),
+            ReplyButton(id="admin_order_status", title="🔄 Update Status"),
+            ReplyButton(id="admin_customer_comm", title="💬 Customer Comm"),
+        ],
+    )
+    
+    # Send second set of buttons
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body="**More Options:**",
+        buttons=[
+            ReplyButton(id="admin_order_analytics", title="📊 Order Analytics"),
+            ReplyButton(id="admin_delivery_tracking", title="🚚 Delivery Tracking"),
+            ReplyButton(id="admin_back_main", title="⬅️ Back to Main"),
         ],
     )
 
@@ -773,7 +838,7 @@ def send_remove_repair_menu(phone_number: str):
             whatsapp.send_interactive_buttons(
                 to=phone_number,
                 body=message,
-                buttons=[ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu")],
+                buttons=[ReplyButton(id="admin_catalog_management", title="⬅️ Back to Catalog")],
             )
             return
         
@@ -793,7 +858,7 @@ To remove a repair service, reply with:
             to=phone_number,
             body=message,
             buttons=[
-                ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu"),
+                ReplyButton(id="admin_catalog_management", title="⬅️ Back to Catalog"),
                 ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
             ],
         )
@@ -801,6 +866,149 @@ To remove a repair service, reply with:
     except Exception as e:
         logger.exception("Failed to load repair IDs for removal")
         whatsapp.send_text(to=phone_number, body=f"❌ Error loading repair IDs: {str(e)}")
+
+
+def send_admin_recent_orders(phone_number: str):
+    """Send recent orders overview (placeholder)"""
+    message = """📋 **Recent Orders**
+
+**Last 24 Hours:**
+• 3 Laptop Orders
+• 2 Repair Services
+• 1 Mixed Order
+
+**Status Overview:**
+✅ 4 Completed
+🔄 2 Processing
+📦 0 Pending
+
+*Note: Full order management system coming soon!*"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_order_status", title="🔄 Update Status"),
+            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
+            ReplyButton(id="admin_back_main", title="🏠 Main Menu"),
+        ],
+    )
+
+
+def send_admin_order_status_menu(phone_number: str):
+    """Send order status update menu (placeholder)"""
+    message = """🔄 **Update Order Status**
+
+**Available Status Updates:**
+• Order Received → Processing
+• Processing → Shipped
+• Shipped → Delivered
+• Mark as Completed
+
+**Instructions:**
+Send order ID with new status to update.
+
+*Example: ORDER123 shipped*
+
+*Note: Advanced status tracking system in development!*"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_recent_orders", title="📋 View Orders"),
+            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
+        ],
+    )
+
+
+def send_admin_customer_comm_menu(phone_number: str):
+    """Send customer communication menu (placeholder)"""
+    message = """💬 **Customer Communication**
+
+**Available Actions:**
+• Send delivery updates
+• Answer product inquiries
+• Handle support requests
+• Process feedback
+
+**Quick Templates:**
+• Order confirmation
+• Shipping notification
+• Delivery confirmation
+• Service completion
+
+*Note: Template system and automation coming soon!*"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_order_analytics", title="📊 View Analytics"),
+            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
+        ],
+    )
+
+
+def send_admin_order_analytics(phone_number: str):
+    """Send order analytics overview (placeholder)"""
+    message = """📊 **Order Analytics**
+
+**This Week:**
+📈 Total Orders: 15 (+25%)
+💰 Revenue: $4,500 (+30%)
+⭐ Avg Rating: 4.8/5
+
+**Top Products:**
+1. Gaming Laptops (40%)
+2. Business Laptops (35%)
+3. Repair Services (25%)
+
+**Customer Satisfaction:**
+😊 95% Positive Feedback
+🔄 5% Return Rate
+
+*Note: Advanced analytics dashboard in development!*"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_delivery_tracking", title="🚚 Delivery Status"),
+            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
+        ],
+    )
+
+
+def send_admin_delivery_tracking(phone_number: str):
+    """Send delivery tracking overview (placeholder)"""
+    message = """🚚 **Delivery Tracking**
+
+**Active Deliveries:**
+📦 ORDER123 - En route (ETA: 2 hours)
+📦 ORDER124 - Preparing for dispatch
+📦 ORDER125 - Out for delivery
+
+**Delivery Stats:**
+✅ 95% On-time delivery
+🕐 Avg delivery time: 24 hours
+📍 Coverage: All major cities
+
+**Next Actions:**
+• Update delivery status
+• Contact delivery partner
+• Handle delivery issues
+
+*Note: Real-time tracking integration coming soon!*"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_customer_comm", title="💬 Customer Updates"),
+            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
+        ],
+    )
 
 
 def send_buy_repairs_buttons(phone_number: str):
