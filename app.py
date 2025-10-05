@@ -21,9 +21,11 @@ import uvicorn
 import asyncio
 import inspect
 import uuid
+from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 from openpyxl import load_workbook
 from activity_logger import activity_logger
+from order_logger import order_logger
 
 
 load_dotenv()
@@ -181,7 +183,92 @@ def handle_admin_command(phone_number: str, message_text: str):
             whatsapp.send_text(to=phone_number, body="❌ Please provide a retailer ID. Format: /remove_repair <retailer_id>")
         return True
     
+    # Order management commands
+    if message_lower.startswith("/update_order "):
+        return handle_admin_order_update(phone_number, message_text)
+    
+    # Order search command
+    if message_lower.startswith("/order "):
+        order_id = message_text[7:].strip().upper()
+        if order_id:
+            order_details = order_logger.get_order_details(order_id)
+            if order_details:
+                send_order_details_message(phone_number, order_details)
+            else:
+                whatsapp.send_text(to=phone_number, body=f"❌ Order {order_id} not found.")
+        else:
+            whatsapp.send_text(to=phone_number, body="❌ Please provide an order ID. Format: /order <ORDER_ID>")
+        return True
+    
     return False
+
+
+def send_order_details_message(phone_number: str, order_details: dict):
+    """Send detailed order information to admin"""
+    try:
+        order_id = order_details['order_id']
+        customer_name = order_details['customer_name'] or "Unknown"
+        customer_phone = order_details['customer_phone']
+        order_type = order_details['order_type'] or "GENERAL"
+        total_amount = order_details['total_amount'] or 0
+        status = order_details['status'] or "NEW"
+        timestamp = order_details['timestamp']
+        order_text = order_details['order_text'] or "N/A"
+        
+        status_emoji = {
+            "NEW": "🆕",
+            "PROCESSING": "🔄", 
+            "COMPLETED": "✅",
+            "CANCELLED": "❌"
+        }.get(status, "📋")
+        
+        message = f"""📋 **Order Details**
+
+**🆔 Order ID:** {order_id}
+**👤 Customer:** {customer_name}
+**📞 Phone:** {customer_phone}
+**📦 Type:** {order_type}
+**💰 Amount:** ${total_amount:.2f}
+**📊 Status:** {status_emoji} {status}
+**🕐 Created:** {timestamp}
+
+**📝 Order Text:**
+{order_text}
+
+**🛍️ Products:**"""
+
+        # Add products if available
+        if order_details.get('products'):
+            for i, product in enumerate(order_details['products'], 1):
+                title = product.get('title', 'Unknown Product')
+                quantity = product.get('quantity', 1)
+                price = product.get('price', 0)
+                item_total = product.get('item_total', 0)
+                retailer_id = product.get('retailer_id', 'N/A')
+                
+                message += f"""
+{i}. **{title}**
+   • Qty: {quantity} | Price: ${price:.2f}
+   • Total: ${item_total:.2f}
+   • ID: {retailer_id}"""
+        
+        # Add admin notes if available
+        if order_details.get('admin_notes'):
+            message += f"\n\n**📝 Admin Notes:**\n{order_details['admin_notes']}"
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_update_status", title="🔄 Update Status"),
+                ReplyButton(id="admin_contact_customer", title="📞 Contact"),
+                ReplyButton(id="admin_order_dashboard", title="⬅️ Dashboard"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to send order details")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading order details: {str(e)}")
 
 
 def send_admin_help(phone_number: str):
@@ -658,6 +745,30 @@ async def receive_message(request: Request):
                 handle_admin_export_request(phone_number, "admin_only")
             elif user_choice == "admin_export_conversations":
                 handle_admin_export_request(phone_number, "conversations")
+            
+            # Order processing handlers
+            elif user_choice == "admin_process_order":
+                send_admin_order_processing_menu(phone_number)
+            elif user_choice == "admin_contact_customer":
+                send_admin_contact_customer_menu(phone_number)
+            elif user_choice == "admin_order_details":
+                send_admin_order_details_menu(phone_number)
+            elif user_choice == "admin_mark_processing":
+                whatsapp.send_text(to=phone_number, body="✅ Order marked as processing. Customer will be notified of status update.")
+            elif user_choice == "admin_request_payment":
+                whatsapp.send_text(to=phone_number, body="💳 Payment request template sent to customer. Follow up via phone for confirmation.")
+            elif user_choice == "admin_schedule_delivery":
+                whatsapp.send_text(to=phone_number, body="🚚 Delivery scheduling initiated. Contact customer to confirm preferred time slots.")
+            elif user_choice == "admin_send_confirmation":
+                whatsapp.send_text(to=phone_number, body="✅ Order confirmation sent to customer with details and next steps.")
+            elif user_choice == "admin_request_details":
+                whatsapp.send_text(to=phone_number, body="📝 Additional details request sent to customer. Await response for order processing.")
+            elif user_choice == "admin_schedule_call":
+                whatsapp.send_text(to=phone_number, body="📞 Call scheduled with customer. Follow up within agreed timeframe.")
+            elif user_choice == "admin_view_all_orders":
+                whatsapp.send_text(to=phone_number, body="📊 Displaying recent orders. Check activity log for complete order history.")
+            elif user_choice == "admin_update_status":
+                whatsapp.send_text(to=phone_number, body="🔄 Order status update interface. Select order to modify status.")
 
         elif isinstance(message, OrderMessage):
             # Mark order message as read (safe)
@@ -666,8 +777,7 @@ async def receive_message(request: Request):
             user_name = getattr(message.user, 'name', 'Unknown')
             phone_number = message.user.phone_number
 
-            # Determine order type and prepare additional data
-            order_type = "Unknown"
+            # Prepare order details for logging
             order_details = {
                 "catalog_id": message.catalog_id,
                 "order_text": message.order_text,
@@ -681,17 +791,50 @@ async def receive_message(request: Request):
                 
                 # Check product retailer IDs to determine order type
                 order_retailer_ids = []
+                total_amount = 0
+                
                 for product in message.products:
+                    # Try multiple field names for better product data extraction
+                    product_title = (
+                        getattr(product, "title", None)
+                        or getattr(product, "name", None) 
+                        or getattr(product, "product_name", None)
+                        or getattr(product, "description", None)
+                        or "Unnamed Product"
+                    )
+                    
+                    product_id = (
+                        getattr(product, "product_retailer_id", None)
+                        or getattr(product, "product_id", None)
+                        or getattr(product, "id", None)
+                        or "N/A"
+                    )
+                    
+                    quantity = getattr(product, "quantity", getattr(product, "quantity_ordered", 1))
+                    price = getattr(product, "retail_price", getattr(product, "price", 0))
+                    
+                    # Calculate item total
+                    try:
+                        price_float = float(str(price).replace('$', '').replace(',', ''))
+                        item_total = price_float * quantity
+                        total_amount += item_total
+                    except:
+                        price_float = 0
+                        item_total = 0
+                    
                     product_data = {
-                        "title": getattr(product, "title", getattr(product, "name", "Unnamed")),
-                        "quantity": getattr(product, "quantity", getattr(product, "quantity_ordered", 1)),
-                        "price": str(getattr(product, "retail_price", getattr(product, "price", "N/A"))),
-                        "retailer_id": getattr(product, "product_retailer_id", "N/A")
+                        "title": product_title,
+                        "quantity": quantity,
+                        "price": price_float,
+                        "item_total": item_total,
+                        "retailer_id": product_id
                     }
                     order_details["products"].append(product_data)
                     
-                    if hasattr(product, 'product_retailer_id'):
+                    if hasattr(product, 'product_retailer_id') and product.product_retailer_id:
                         order_retailer_ids.append(product.product_retailer_id)
+                    elif product_id != "N/A":
+                        order_retailer_ids.append(product_id)
                 
                 # Determine if it's laptops, repairs, or mixed
                 laptop_count = sum(1 for rid in order_retailer_ids if rid in laptop_ids)
@@ -702,16 +845,39 @@ async def receive_message(request: Request):
                 elif repair_count > 0 and laptop_count == 0:
                     order_type = "REPAIR"
                 elif laptop_count > 0 and repair_count > 0:
-                    order_type = "MIXED (LAPTOP + REPAIR)"
+                    order_type = "MIXED"
+                else:
+                    order_type = "GENERAL"
                     
                 order_details["order_type"] = order_type
                 order_details["laptop_count"] = laptop_count
                 order_details["repair_count"] = repair_count
+                order_details["total_amount"] = total_amount
                 
             except Exception as e:
                 logger.exception("Failed to determine order type: %s", e)
+                order_type = "UNKNOWN"
+                total_amount = 0
 
-            # Log the order
+            # Log the order to Excel
+            try:
+                order_id = order_logger.log_order(
+                    customer_phone=phone_number,
+                    customer_name=user_name,
+                    order_type=order_type,
+                    total_amount=total_amount,
+                    catalog_id=message.catalog_id,
+                    order_text=message.order_text,
+                    products_data=order_details["products"],
+                    currency="USD",
+                    status="NEW"
+                )
+                logger.info(f"Order logged with ID: {order_id}")
+            except Exception as e:
+                logger.exception("Failed to log order to Excel: %s", e)
+                order_id = f"ERR_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+            # Log the order activity
             activity_logger.log_activity(
                 phone_number=phone_number,
                 user_name=user_name,
@@ -721,82 +887,104 @@ async def receive_message(request: Request):
                 bot_response="Order confirmation sent",
                 admin_flag=False,
                 session_id=session_id,
-                additional_data=order_details
+                additional_data={**order_details, "order_id": order_id}
             )
 
-            # Build enhanced order summary
-            summary_lines = [
-                f"🚨 NEW {order_type} ORDER from {message.user.name} ({message.user.phone_number}):",
-                f"Order details: {message.order_text}",
-                f"Catalog ID: {message.catalog_id}",
-                "📦 Products ordered:",
+            # Build enhanced order summary for admin notification
+            admin_summary_lines = [
+                f"🚨 **NEW {order_type} ORDER RECEIVED**",
+                f"🆔 Order ID: {order_id}",
+                f"📱 Customer: {user_name} ({phone_number})",
+                f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"📋 Order Text: {message.order_text}",
+                f"🏪 Catalog ID: {message.catalog_id}",
+                f"� Total Amount: ${total_amount:.2f}",
+                "",
+                "📦 **PRODUCTS ORDERED:**",
             ]
             
-            total_amount = 0
-            for p in message.products:
-                # Product is assumed to have title, retail_price, quantity (adjust if structure differs)
-                title = getattr(p, "title", getattr(p, "name", "Unnamed"))
-                qty = getattr(p, "quantity", getattr(p, "quantity_ordered", 1))
-                price = getattr(p, "retail_price", getattr(p, "price", "N/A"))
-                retailer_id = getattr(p, "product_retailer_id", "N/A")
-                
-                if order_type == "LAPTOP":
-                    summary_lines.append(f"💻 {title} x{qty} @ {price} (ID: {retailer_id})")
-                elif order_type == "REPAIR":
-                    summary_lines.append(f"🛠 {title} x{qty} @ {price} (ID: {retailer_id})")
-                else:
-                    summary_lines.append(f"📦 {title} x{qty} @ {price} (ID: {retailer_id})")
-                
-                # Try to calculate total if price is numeric
-                try:
-                    if isinstance(price, (int, float)):
-                        total_amount += price * qty
-                    elif isinstance(price, str) and price.replace('.', '').isdigit():
-                        total_amount += float(price) * qty
-                except:
-                    pass
-
-            summary_lines.extend([
+            for i, product_data in enumerate(order_details["products"], 1):
+                admin_summary_lines.extend([
+                    f"{i}. **{product_data['title']}**",
+                    f"   • Quantity: {product_data['quantity']}",
+                    f"   • Unit Price: ${product_data['price']:.2f}",
+                    f"   • Subtotal: ${product_data['item_total']:.2f}",
+                    f"   • Product ID: {product_data['retailer_id']}",
+                    ""
+                ])
+            
+            # Add order totals and summary
+            admin_summary_lines.extend([
+                "💰 **ORDER SUMMARY:**",
+                f"• Order ID: {order_id}",
+                f"• Total Items: {len(message.products)}",
+                f"• Total Amount: ${total_amount:.2f}",
+                f"• Order Type: {order_type}",
+                f"• Status: NEW",
                 "",
-                f"💰 **Order Type**: {order_type}",
-                f"📊 **Total Items**: {sum(getattr(p, 'quantity', 1) for p in message.products)}",
+                "⚡ **NEXT ACTIONS:**",
+                "1. Contact customer within 30 minutes",
+                "2. Confirm payment method & delivery details",
+                "3. Process inventory and prepare shipment",
+                "4. Update order status in system",
+                "",
+                f"� **Customer Contact:** {phone_number}",
+                f"� **Customer Name:** {user_name}",
             ])
             
-            if total_amount > 0:
-                summary_lines.append(f"💵 **Estimated Total**: ${total_amount:.2f}")
+            admin_message = "\n".join(admin_summary_lines)
+            
+            # Send detailed order notification to admin
+            try:
+                whatsapp.send_interactive_buttons(
+                    to=ADMIN_NUMBER,
+                    body=admin_message,
+                    buttons=[
+                        ReplyButton(id="admin_process_order", title="✅ Process Order"),
+                        ReplyButton(id="admin_contact_customer", title="📞 Contact"),
+                        ReplyButton(id="admin_order_details", title="📋 Details"),
+                    ],
+                )
+                
+                # Also log the admin notification
+                activity_logger.log_activity(
+                    phone_number=ADMIN_NUMBER,
+                    user_name="System",
+                    activity_type="admin_order_notification",
+                    message_type="system",
+                    bot_response=f"Order notification sent for {order_type} order from {phone_number}",
+                    admin_flag=True,
+                    session_id=session_id,
+                    additional_data={
+                        "customer_phone": phone_number,
+                        "customer_name": user_name,
+                        "order_type": order_type,
+                        "order_value": total_amount,
+                        "product_count": len(message.products)
+                    }
+                )
+                
+            except Exception as admin_error:
+                logger.exception("Failed to send order notification to admin: %s", admin_error)
 
-            summary_lines.extend([
-                "",
-                "⚡ **NEXT STEPS:**",
-                "1. Contact customer for payment & delivery",
-                "2. Confirm upgrades/accessories if any",
-                "3. Schedule laptop registration after delivery" if "LAPTOP" in order_type else "3. Schedule service appointment",
-                "4. Provide Starter Essentials software access" if "LAPTOP" in order_type else "4. Provide service tracking info"
-            ])
-
-            order_summary = "\n".join(summary_lines)
-
-            # Send order summary to admin
-            whatsapp.send_text(to=ADMIN_NUMBER, body=order_summary)
-
-            # Acknowledge customer with appropriate response
-            if order_type == "REPAIR":
-                customer_response = """🎉 Awesome! We've received your repair service order!
+            # Send confirmation to customer based on order type
+            if order_type in ["REPAIR", "MIXED (LAPTOP + REPAIR)"]:
+                customer_response = f"""🎉 Awesome! We've received your {order_type.lower()} order!
 
 **What happens next:**
 1️⃣ Our team will contact you within 30 minutes
-2️⃣ Confirm service details & scheduling
-3️⃣ Arrange pickup/drop-off or on-site service
-4️⃣ Complete service registration for tracking:
-   • Real-time repair updates
-   • WhatsApp service notifications
-   • Priority support access
+2️⃣ Confirm service details & payment method
+3️⃣ Schedule pickup/drop-off for repairs
+4️⃣ Complete service registration to unlock:
+   • FREE diagnosis & quote
+   • Lifetime repair tracking  
+   • WhatsApp progress updates
 
 🛠 **Remember**: Service registration enables tracking and priority support!
 
 Thanks for choosing SpectraX Laptop Services! 🔧✨"""
             else:
-                customer_response = """🎉 Awesome! We've received your laptop order!
+                customer_response = f"""🎉 Awesome! We've received your {order_type.lower()} order!
 
 **What happens next:**
 1️⃣ Our team will contact you within 30 minutes
@@ -811,9 +999,21 @@ Thanks for choosing SpectraX Laptop Services! 🔧✨"""
 
 Thanks for choosing SpectraX Laptops! 💻✨"""
             
+            # Send customer confirmation
             whatsapp.send_text(
                 to=message.user.phone_number,
                 body=customer_response
+            )
+
+            # Log customer confirmation
+            activity_logger.log_activity(
+                phone_number=phone_number,
+                user_name=user_name,
+                activity_type="order_confirmation_sent",
+                message_type="text",
+                bot_response=f"Order confirmation sent for {order_type}",
+                admin_flag=False,
+                session_id=session_id
             )
 
         return {"status": "processed"}
@@ -840,6 +1040,240 @@ Choose an option below 👇"""
             ReplyButton(id="lifetime_support", title="🛡 Support"),
         ],
     )
+
+
+def send_admin_order_dashboard(phone_number: str):
+    """Send order management dashboard with real data from Excel"""
+    try:
+        # Get order statistics
+        stats = order_logger.get_order_statistics()
+        recent_orders = order_logger.get_recent_orders(5)
+        
+        message = f"""📋 **Order Management Dashboard**
+
+**📊 Order Statistics:**
+• Total Orders: {stats['total_orders']}
+• New Orders: {stats['new_orders']}
+• Processing: {stats['processing_orders']}
+• Completed: {stats['completed_orders']}
+• Cancelled: {stats['cancelled_orders']}
+
+**💰 Revenue:**
+• Total Revenue: ${stats['total_revenue']:.2f}
+• Avg Order Value: ${stats['average_order_value']:.2f}
+
+**🕐 Recent Orders:**"""
+
+        if recent_orders:
+            for order in recent_orders[:3]:
+                order_id = order['order_id'][:12] + "..." if len(order['order_id']) > 12 else order['order_id']
+                customer = order['customer_name'] or "Unknown"
+                amount = f"${order['total_amount']:.2f}" if order['total_amount'] else "N/A"
+                status = order['status'] or "NEW"
+                
+                status_emoji = {
+                    "NEW": "🆕",
+                    "PROCESSING": "🔄", 
+                    "COMPLETED": "✅",
+                    "CANCELLED": "❌"
+                }.get(status, "📋")
+                
+                message += f"\n{status_emoji} {order_id} - {customer} - {amount}"
+        else:
+            message += "\nNo recent orders found."
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_new_orders", title="🆕 New Orders"),
+                ReplyButton(id="admin_all_orders", title="📋 All Orders"),
+                ReplyButton(id="admin_order_search", title="🔍 Search Order"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get order dashboard")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading order dashboard: {str(e)}")
+
+
+def send_admin_new_orders(phone_number: str):
+    """Show all new orders that need processing"""
+    try:
+        new_orders = order_logger.get_orders_by_status("NEW")
+        
+        if not new_orders:
+            message = "🆕 **New Orders**\n\nNo new orders found! All orders have been processed. 🎉"
+        else:
+            message = f"🆕 **New Orders ({len(new_orders)})**\n\n"
+            
+            for order in new_orders[-10:]:  # Show last 10 new orders
+                order_id = order['order_id']
+                customer = order['customer_name'] or "Unknown"
+                customer_phone = order['customer_phone'][-4:] if order['customer_phone'] else "N/A"
+                amount = f"${order['total_amount']:.2f}" if order['total_amount'] else "N/A"
+                order_type = order['order_type'] or "GENERAL"
+                timestamp = order['timestamp']
+                
+                message += f"""**{order_id}**
+👤 {customer} (...{customer_phone})
+💰 {amount} | 📦 {order_type}
+🕐 {timestamp}
+
+"""
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_process_next", title="⚡ Process Next"),
+                ReplyButton(id="admin_order_details", title="📋 Order Details"),
+                ReplyButton(id="admin_order_dashboard", title="⬅️ Dashboard"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get new orders")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading new orders: {str(e)}")
+
+
+def send_admin_all_orders(phone_number: str):
+    """Show all orders with filtering options"""
+    try:
+        all_orders = order_logger.get_recent_orders(20)  # Last 20 orders
+        stats = order_logger.get_order_statistics()
+        
+        message = f"""📋 **All Orders (Last 20)**
+
+**Quick Stats:**
+🆕 New: {stats['new_orders']} | 🔄 Processing: {stats['processing_orders']}
+✅ Completed: {stats['completed_orders']} | ❌ Cancelled: {stats['cancelled_orders']}
+
+**Recent Orders:**
+"""
+        
+        if all_orders:
+            for order in all_orders:
+                order_id = order['order_id'][:10] + "..." if len(order['order_id']) > 10 else order['order_id']
+                customer = (order['customer_name'] or "Unknown")[:15]
+                amount = f"${order['total_amount']:.2f}" if order['total_amount'] else "N/A"
+                status = order['status'] or "NEW"
+                
+                status_emoji = {
+                    "NEW": "🆕",
+                    "PROCESSING": "🔄", 
+                    "COMPLETED": "✅",
+                    "CANCELLED": "❌"
+                }.get(status, "📋")
+                
+                message += f"{status_emoji} {order_id} | {customer} | {amount}\n"
+        else:
+            message += "No orders found."
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_filter_status", title="🔍 Filter Status"),
+                ReplyButton(id="admin_export_orders", title="📥 Export Orders"),
+                ReplyButton(id="admin_order_dashboard", title="⬅️ Dashboard"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get all orders")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading all orders: {str(e)}")
+
+
+def handle_admin_order_update(phone_number: str, message_text: str):
+    """Handle order status updates via text commands"""
+    try:
+        text = message_text.lower().strip()
+        
+        # Format: /update_order ORDER_ID STATUS [NOTES]
+        if text.startswith("/update_order "):
+            parts = message_text[14:].strip().split(' ', 2)
+            if len(parts) < 2:
+                whatsapp.send_text(
+                    to=phone_number, 
+                    body="❌ Invalid format. Use: /update_order ORDER_ID STATUS [NOTES]\n\nValid statuses: NEW, PROCESSING, COMPLETED, CANCELLED"
+                )
+                return True
+            
+            order_id = parts[0].upper()
+            status = parts[1].upper()
+            notes = parts[2] if len(parts) > 2 else ""
+            
+            # Validate status
+            valid_statuses = ["NEW", "PROCESSING", "COMPLETED", "CANCELLED"]
+            if status not in valid_statuses:
+                whatsapp.send_text(
+                    to=phone_number,
+                    body=f"❌ Invalid status. Valid statuses: {', '.join(valid_statuses)}"
+                )
+                return True
+            
+            # Update order
+            success = order_logger.update_order_status(order_id, status, notes, "Admin")
+            
+            if success:
+                # Get order details for confirmation
+                order_details = order_logger.get_order_details(order_id)
+                if order_details:
+                    customer_name = order_details['customer_name'] or "Unknown"
+                    customer_phone = order_details['customer_phone']
+                    
+                    confirmation_message = f"""✅ **Order Updated Successfully**
+
+**Order ID:** {order_id}
+**New Status:** {status}
+**Customer:** {customer_name}
+**Notes Added:** {notes or "None"}
+
+**Next Steps:**
+• Notify customer of status change
+• Update inventory if completed
+• Process refund if cancelled"""
+                    
+                    whatsapp.send_interactive_buttons(
+                        to=phone_number,
+                        body=confirmation_message,
+                        buttons=[
+                            ReplyButton(id="admin_notify_customer", title="📞 Notify Customer"),
+                            ReplyButton(id="admin_order_details", title="📋 Order Details"),
+                            ReplyButton(id="admin_new_orders", title="🆕 New Orders"),
+                        ],
+                    )
+                    
+                    # Log the admin action
+                    activity_logger.log_activity(
+                        phone_number=phone_number,
+                        user_name="Admin",
+                        activity_type="admin_order_update",
+                        message_type="text",
+                        user_input=message_text,
+                        bot_response=f"Order {order_id} updated to {status}",
+                        admin_flag=True,
+                        additional_data={
+                            "order_id": order_id,
+                            "old_status": order_details.get('status', 'Unknown'),
+                            "new_status": status,
+                            "notes": notes
+                        }
+                    )
+                else:
+                    whatsapp.send_text(to=phone_number, body="✅ Order updated but couldn't retrieve details.")
+            else:
+                whatsapp.send_text(to=phone_number, body=f"❌ Failed to update order {order_id}. Order may not exist.")
+            
+            return True
+        
+        return False
+        
+    except Exception as e:
+        logger.exception("Failed to handle order update")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error updating order: {str(e)}")
+        return True
 
 
 def send_admin_welcome_message(phone_number: str):
@@ -1921,6 +2355,105 @@ The file is ready in your project directory. You can access it via:
     except Exception as e:
         logger.exception("Failed to handle export request")
         whatsapp.send_text(to=phone_number, body=f"❌ Export error: {str(e)}")
+
+
+def send_admin_order_processing_menu(phone_number: str):
+    """Send order processing options to admin"""
+    message = """⚡ **Order Processing Center**
+
+**📋 Quick Actions:**
+• Mark order as processing
+• Contact customer for details
+• Request payment confirmation
+• Schedule delivery/pickup
+• Update order status
+
+**📞 Customer Communication:**
+• Send order confirmation
+• Request additional details
+• Provide delivery updates
+• Handle special requests
+
+**📦 Fulfillment Options:**
+• Prepare items for shipment
+• Schedule installation
+• Arrange pickup service
+• Process returns/exchanges"""
+
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_mark_processing", title="🔄 Processing"),
+            ReplyButton(id="admin_request_payment", title="💳 Payment"),
+            ReplyButton(id="admin_schedule_delivery", title="🚚 Delivery"),
+        ],
+    )
+
+
+def send_admin_contact_customer_menu(phone_number: str):
+    """Send customer contact options to admin"""
+    message = """📞 **Customer Contact Center**
+
+**🎯 Contact Purposes:**
+• Order confirmation & details
+• Payment method confirmation
+• Delivery scheduling
+• Technical specifications
+• Special requests/customizations
+
+**💬 Communication Templates:**
+• Order received confirmation
+• Payment request message
+• Delivery scheduling
+• Technical support follow-up
+• Thank you & feedback request
+
+**📋 Customer Information:**
+Use recent order details to personalize communication and provide excellent service."""
+
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_send_confirmation", title="✅ Confirm"),
+            ReplyButton(id="admin_request_details", title="📝 Details"),
+            ReplyButton(id="admin_schedule_call", title="📞 Call"),
+        ],
+    )
+
+
+def send_admin_order_details_menu(phone_number: str):
+    """Send order details and management options"""
+    message = """📋 **Order Details & Management**
+
+**📊 Order Analytics:**
+• View complete order history
+• Customer purchase patterns
+• Product performance metrics
+• Revenue tracking
+
+**🔄 Order Management:**
+• Update order status
+• Modify order details
+• Process cancellations
+• Handle returns/exchanges
+
+**📈 Business Intelligence:**
+• Sales performance
+• Customer satisfaction
+• Inventory insights
+• Growth opportunities"""
+
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_view_all_orders", title="📊 All Orders"),
+            ReplyButton(id="admin_update_status", title="🔄 Update"),
+            ReplyButton(id="admin_back_main", title="🏠 Main"),
+        ],
+    )
 
 
 def _get_text_content(msg) -> Optional[str]:
