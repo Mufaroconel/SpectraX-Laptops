@@ -36,6 +36,9 @@ PRODUCT_RETAILER_ID_REPAIR = os.getenv("PRODUCT_RETAILER_ID_REPAIR")
 PRODUCT_RETAILER_ID_REPAIR_2 = os.getenv("PRODUCT_RETAILER_ID_REPAIR_2")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 
+# Admin configuration
+ADMIN_NUMBER = "263711475883"
+
 if not VERIFY_TOKEN:
     raise ValueError("VERIFY_TOKEN environment variable is not set")
 if not ACCESS_TOKEN:
@@ -121,6 +124,256 @@ def safe_mark_as_read(message_id: str):
         logger.exception("Failed to mark message %s as read: %s", message_id, exc)
 
 
+def is_admin(phone_number: str) -> bool:
+    """Check if the phone number is an admin."""
+    return phone_number == ADMIN_NUMBER
+
+
+def handle_admin_command(phone_number: str, message_text: str):
+    """Handle admin commands for managing retailer IDs."""
+    if not is_admin(phone_number):
+        return False
+    
+    message_lower = message_text.lower().strip()
+    
+    # Admin help command
+    if message_lower in ["/admin", "/help", "help"]:
+        send_admin_help(phone_number)
+        return True
+    
+    # Add laptop retailer ID
+    if message_lower.startswith("/add_laptop "):
+        retailer_id = message_text[12:].strip()
+        if retailer_id:
+            add_laptop_retailer_id(phone_number, retailer_id)
+        else:
+            whatsapp.send_text(to=phone_number, body="❌ Please provide a retailer ID. Format: /add_laptop <retailer_id>")
+        return True
+    
+    # Add repair retailer ID
+    if message_lower.startswith("/add_repair "):
+        retailer_id = message_text[12:].strip()
+        if retailer_id:
+            add_repair_retailer_id(phone_number, retailer_id)
+        else:
+            whatsapp.send_text(to=phone_number, body="❌ Please provide a retailer ID. Format: /add_repair <retailer_id>")
+        return True
+    
+    # List current IDs
+    if message_lower in ["/list", "/list_ids"]:
+        list_current_retailer_ids(phone_number)
+        return True
+    
+    # Remove laptop retailer ID
+    if message_lower.startswith("/remove_laptop "):
+        retailer_id = message_text[15:].strip()
+        if retailer_id:
+            remove_laptop_retailer_id(phone_number, retailer_id)
+        else:
+            whatsapp.send_text(to=phone_number, body="❌ Please provide a retailer ID. Format: /remove_laptop <retailer_id>")
+        return True
+    
+    # Remove repair retailer ID
+    if message_lower.startswith("/remove_repair "):
+        retailer_id = message_text[15:].strip()
+        if retailer_id:
+            remove_repair_retailer_id(phone_number, retailer_id)
+        else:
+            whatsapp.send_text(to=phone_number, body="❌ Please provide a retailer ID. Format: /remove_repair <retailer_id>")
+        return True
+    
+    return False
+
+
+def send_admin_help(phone_number: str):
+    """Send admin help message with available commands."""
+    help_message = """🔧 **SpectraX Admin Panel**
+
+**Button Interface:**
+Use the admin dashboard buttons for easy management, or use text commands below.
+
+**Text Commands:**
+
+📋 **Management:**
+• `/list` - View all current retailer IDs
+• `/add_laptop <id>` - Add new laptop retailer ID
+• `/add_repair <id>` - Add new repair retailer ID
+• `/remove_laptop <id>` - Remove laptop retailer ID
+• `/remove_repair <id>` - Remove repair retailer ID
+
+📊 **Current Status:**
+• You receive all order notifications
+• Changes update Excel files automatically
+• Changes take effect immediately
+
+**Example Usage:**
+• `/add_laptop abc123xyz` - Adds abc123xyz to laptop catalog
+• `/add_repair def456uvw` - Adds def456uvw to repair catalog
+• `/list` - Shows all current IDs
+
+💡 **Tip:** Use the buttons below for easier navigation!"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=help_message,
+        buttons=[
+            ReplyButton(id="admin_manage_catalog", title="📝 Manage Catalog"),
+            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ReplyButton(id="browse_laptops", title="👀 Preview Store"),
+        ],
+    )
+
+
+def add_laptop_retailer_id(phone_number: str, retailer_id: str):
+    """Add a new laptop retailer ID to the Excel file."""
+    try:
+        from catalog_utils import load_laptop_retailer_ids
+        current_ids = load_laptop_retailer_ids()
+        
+        if retailer_id in current_ids:
+            whatsapp.send_text(to=phone_number, body=f"⚠️ Laptop retailer ID '{retailer_id}' already exists!")
+            return
+        
+        # Add to Excel file
+        current_ids.append(retailer_id)
+        update_laptop_excel(current_ids)
+        
+        whatsapp.send_text(to=phone_number, body=f"✅ Successfully added laptop retailer ID: {retailer_id}\n\nTotal laptop IDs: {len(current_ids)}")
+        logger.info("Admin %s added laptop retailer ID: %s", phone_number, retailer_id)
+        
+    except Exception as e:
+        logger.exception("Failed to add laptop retailer ID")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error adding laptop retailer ID: {str(e)}")
+
+
+def add_repair_retailer_id(phone_number: str, retailer_id: str):
+    """Add a new repair retailer ID to the Excel file."""
+    try:
+        from catalog_utils import load_repair_retailer_ids
+        current_ids = load_repair_retailer_ids()
+        
+        if retailer_id in current_ids:
+            whatsapp.send_text(to=phone_number, body=f"⚠️ Repair retailer ID '{retailer_id}' already exists!")
+            return
+        
+        # Add to Excel file
+        current_ids.append(retailer_id)
+        update_repair_excel(current_ids)
+        
+        whatsapp.send_text(to=phone_number, body=f"✅ Successfully added repair retailer ID: {retailer_id}\n\nTotal repair IDs: {len(current_ids)}")
+        logger.info("Admin %s added repair retailer ID: %s", phone_number, retailer_id)
+        
+    except Exception as e:
+        logger.exception("Failed to add repair retailer ID")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error adding repair retailer ID: {str(e)}")
+
+
+def remove_laptop_retailer_id(phone_number: str, retailer_id: str):
+    """Remove a laptop retailer ID from the Excel file."""
+    try:
+        from catalog_utils import load_laptop_retailer_ids
+        current_ids = load_laptop_retailer_ids()
+        
+        if retailer_id not in current_ids:
+            whatsapp.send_text(to=phone_number, body=f"⚠️ Laptop retailer ID '{retailer_id}' not found!")
+            return
+        
+        # Remove from list
+        current_ids.remove(retailer_id)
+        update_laptop_excel(current_ids)
+        
+        whatsapp.send_text(to=phone_number, body=f"✅ Successfully removed laptop retailer ID: {retailer_id}\n\nRemaining laptop IDs: {len(current_ids)}")
+        logger.info("Admin %s removed laptop retailer ID: %s", phone_number, retailer_id)
+        
+    except Exception as e:
+        logger.exception("Failed to remove laptop retailer ID")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error removing laptop retailer ID: {str(e)}")
+
+
+def remove_repair_retailer_id(phone_number: str, retailer_id: str):
+    """Remove a repair retailer ID from the Excel file."""
+    try:
+        from catalog_utils import load_repair_retailer_ids
+        current_ids = load_repair_retailer_ids()
+        
+        if retailer_id not in current_ids:
+            whatsapp.send_text(to=phone_number, body=f"⚠️ Repair retailer ID '{retailer_id}' not found!")
+            return
+        
+        # Remove from list
+        current_ids.remove(retailer_id)
+        update_repair_excel(current_ids)
+        
+        whatsapp.send_text(to=phone_number, body=f"✅ Successfully removed repair retailer ID: {retailer_id}\n\nRemaining repair IDs: {len(current_ids)}")
+        logger.info("Admin %s removed repair retailer ID: %s", phone_number, retailer_id)
+        
+    except Exception as e:
+        logger.exception("Failed to remove repair retailer ID")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error removing repair retailer ID: {str(e)}")
+
+
+def list_current_retailer_ids(phone_number: str):
+    """List all current retailer IDs for admin."""
+    try:
+        from catalog_utils import load_laptop_retailer_ids, load_repair_retailer_ids
+        laptop_ids = load_laptop_retailer_ids()
+        repair_ids = load_repair_retailer_ids()
+        
+        laptop_list = "\n".join([f"  • {rid}" for rid in laptop_ids]) if laptop_ids else "  (none)"
+        repair_list = "\n".join([f"  • {rid}" for rid in repair_ids]) if repair_ids else "  (none)"
+        
+        message = f"""📋 **Current Retailer IDs**
+
+💻 **Laptops ({len(laptop_ids)} total):**
+{laptop_list}
+
+🛠 **Repairs ({len(repair_ids)} total):**
+{repair_list}
+
+Use `/add_laptop <id>` or `/add_repair <id>` to add more.
+Use `/remove_laptop <id>` or `/remove_repair <id>` to remove."""
+        
+        whatsapp.send_text(to=phone_number, body=message)
+        
+    except Exception as e:
+        logger.exception("Failed to list retailer IDs")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error listing retailer IDs: {str(e)}")
+
+
+def update_laptop_excel(laptop_ids: List[str]):
+    """Update the laptops.xlsx file with new laptop IDs."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    
+    # Add header
+    ws.append(["retailer_id"])
+    
+    # Add laptop IDs
+    for rid in laptop_ids:
+        ws.append([rid])
+    
+    wb.save("laptops.xlsx")
+
+
+def update_repair_excel(repair_ids: List[str]):
+    """Update the repairs.xlsx file with new repair IDs."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    
+    # Add header
+    ws.append(["retailer_id"])
+    
+    # Add repair IDs
+    for rid in repair_ids:
+        ws.append([rid])
+    
+    wb.save("repairs.xlsx")
+
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to SpectraX Laptops WhatsApp Bot!"}
@@ -152,8 +405,18 @@ async def receive_message(request: Request):
         if isinstance(message, TextMessage):
             # Mark the incoming message as read (safe)
             safe_mark_as_read(message.id)
-            # Send SpectraX welcome message with quick reply buttons
-            send_welcome_message(message.user.phone_number)
+            
+            # Extract text content safely and check admin commands first
+            _text = _get_text_content(message)
+            if _text and handle_admin_command(message.user.phone_number, _text):
+                return {"status": "admin_command_processed"}
+            
+            # Check if it's admin - send admin welcome instead of regular welcome
+            if is_admin(message.user.phone_number):
+                send_admin_welcome_message(message.user.phone_number)
+            else:
+                # Send SpectraX welcome message with quick reply buttons for regular users
+                send_welcome_message(message.user.phone_number)
 
         elif isinstance(message, InteractiveButtonMessage):
             # Mark the incoming message as read (safe)
@@ -191,42 +454,129 @@ async def receive_message(request: Request):
                 handle_buy_laptops(phone_number)
             elif user_choice == "action_repairs":
                 handle_repairs(phone_number)
+            # Admin button handlers
+            elif user_choice == "admin_manage_catalog":
+                send_admin_catalog_menu(phone_number)
+            elif user_choice == "admin_view_stats":
+                list_current_retailer_ids(phone_number)
+            elif user_choice == "admin_add_laptop":
+                send_add_laptop_prompt(phone_number)
+            elif user_choice == "admin_add_repair":
+                send_add_repair_prompt(phone_number)
+            elif user_choice == "admin_remove_laptop":
+                send_remove_laptop_menu(phone_number)
+            elif user_choice == "admin_remove_repair":
+                send_remove_repair_menu(phone_number)
+            elif user_choice == "admin_back_main":
+                if is_admin(phone_number):
+                    send_admin_welcome_message(phone_number)
+                else:
+                    send_welcome_message(phone_number)
 
         elif isinstance(message, OrderMessage):
             # Mark order message as read (safe)
             safe_mark_as_read(message.id)
 
-            # Build order summary
+            # Determine order type based on retailer IDs
+            order_type = "Unknown"
+            try:
+                from catalog_utils import load_laptop_retailer_ids, load_repair_retailer_ids
+                laptop_ids = load_laptop_retailer_ids()
+                repair_ids = load_repair_retailer_ids()
+                
+                # Check product retailer IDs to determine order type
+                order_retailer_ids = []
+                for product in message.products:
+                    if hasattr(product, 'product_retailer_id'):
+                        order_retailer_ids.append(product.product_retailer_id)
+                
+                # Determine if it's laptops, repairs, or mixed
+                laptop_count = sum(1 for rid in order_retailer_ids if rid in laptop_ids)
+                repair_count = sum(1 for rid in order_retailer_ids if rid in repair_ids)
+                
+                if laptop_count > 0 and repair_count == 0:
+                    order_type = "LAPTOP"
+                elif repair_count > 0 and laptop_count == 0:
+                    order_type = "REPAIR"
+                elif laptop_count > 0 and repair_count > 0:
+                    order_type = "MIXED (LAPTOP + REPAIR)"
+                
+            except Exception as e:
+                logger.exception("Failed to determine order type: %s", e)
+
+            # Build enhanced order summary
             summary_lines = [
-                f"🚨 NEW LAPTOP ORDER from {message.user.name} ({message.user.phone_number}):",
+                f"🚨 NEW {order_type} ORDER from {message.user.name} ({message.user.phone_number}):",
                 f"Order details: {message.order_text}",
                 f"Catalog ID: {message.catalog_id}",
                 "📦 Products ordered:",
             ]
+            
+            total_amount = 0
             for p in message.products:
                 # Product is assumed to have title, retail_price, quantity (adjust if structure differs)
                 title = getattr(p, "title", getattr(p, "name", "Unnamed"))
                 qty = getattr(p, "quantity", getattr(p, "quantity_ordered", 1))
                 price = getattr(p, "retail_price", getattr(p, "price", "N/A"))
-                summary_lines.append(f"💻 {title} x{qty} @ {price}")
+                retailer_id = getattr(p, "product_retailer_id", "N/A")
+                
+                if order_type == "LAPTOP":
+                    summary_lines.append(f"💻 {title} x{qty} @ {price} (ID: {retailer_id})")
+                elif order_type == "REPAIR":
+                    summary_lines.append(f"🛠 {title} x{qty} @ {price} (ID: {retailer_id})")
+                else:
+                    summary_lines.append(f"📦 {title} x{qty} @ {price} (ID: {retailer_id})")
+                
+                # Try to calculate total if price is numeric
+                try:
+                    if isinstance(price, (int, float)):
+                        total_amount += price * qty
+                    elif isinstance(price, str) and price.replace('.', '').isdigit():
+                        total_amount += float(price) * qty
+                except:
+                    pass
 
             summary_lines.extend([
                 "",
-                "⚡ NEXT STEPS:",
+                f"💰 **Order Type**: {order_type}",
+                f"📊 **Total Items**: {sum(getattr(p, 'quantity', 1) for p in message.products)}",
+            ])
+            
+            if total_amount > 0:
+                summary_lines.append(f"💵 **Estimated Total**: ${total_amount:.2f}")
+
+            summary_lines.extend([
+                "",
+                "⚡ **NEXT STEPS:**",
                 "1. Contact customer for payment & delivery",
                 "2. Confirm upgrades/accessories if any",
-                "3. Schedule laptop registration after delivery",
-                "4. Provide Starter Essentials software access"
+                "3. Schedule laptop registration after delivery" if "LAPTOP" in order_type else "3. Schedule service appointment",
+                "4. Provide Starter Essentials software access" if "LAPTOP" in order_type else "4. Provide service tracking info"
             ])
 
             order_summary = "\n".join(summary_lines)
 
             # Send order summary to admin
-            ADMIN_NUMBER = "263711475883"
             whatsapp.send_text(to=ADMIN_NUMBER, body=order_summary)
 
-            # Acknowledge customer with registration info
-            customer_response = """🎉 Awesome! We've received your laptop order!
+            # Acknowledge customer with appropriate response
+            if order_type == "REPAIR":
+                customer_response = """🎉 Awesome! We've received your repair service order!
+
+**What happens next:**
+1️⃣ Our team will contact you within 30 minutes
+2️⃣ Confirm service details & scheduling
+3️⃣ Arrange pickup/drop-off or on-site service
+4️⃣ Complete service registration for tracking:
+   • Real-time repair updates
+   • WhatsApp service notifications
+   • Priority support access
+
+🛠 **Remember**: Service registration enables tracking and priority support!
+
+Thanks for choosing SpectraX Laptop Services! 🔧✨"""
+            else:
+                customer_response = """🎉 Awesome! We've received your laptop order!
 
 **What happens next:**
 1️⃣ Our team will contact you within 30 minutes
@@ -270,6 +620,187 @@ Choose an option below 👇"""
             ReplyButton(id="lifetime_support", title="🛡 Lifetime Support"),
         ],
     )
+
+
+def send_admin_welcome_message(phone_number: str):
+    """Send admin welcome message with management options"""
+    message = """🔧 **SpectraX Admin Dashboard**
+
+Welcome back, Admin! 👋
+
+**Quick Stats:**
+"""
+    
+    try:
+        from catalog_utils import load_laptop_retailer_ids, load_repair_retailer_ids
+        laptop_count = len(load_laptop_retailer_ids())
+        repair_count = len(load_repair_retailer_ids())
+        message += f"💻 Laptop Products: {laptop_count}\n🛠 Repair Services: {repair_count}\n\n"
+    except:
+        message += "📊 Loading product counts...\n\n"
+    
+    message += "**Management Options:**"
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_manage_catalog", title="📝 Manage Catalog"),
+            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ReplyButton(id="browse_laptops", title="👀 Preview Store"),
+        ],
+    )
+
+
+def send_admin_catalog_menu(phone_number: str):
+    """Send admin catalog management menu"""
+    message = """📝 **Catalog Management**
+
+Choose what you'd like to manage:
+
+**Add Products:**
+• Add new laptop retailer IDs
+• Add new repair service IDs
+
+**Remove Products:**
+• Remove existing laptop IDs
+• Remove existing repair IDs"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_add_laptop", title="➕ Add Laptop"),
+            ReplyButton(id="admin_add_repair", title="➕ Add Repair"),
+            ReplyButton(id="admin_remove_laptop", title="➖ Remove Laptop"),
+        ],
+    )
+
+
+def send_add_laptop_prompt(phone_number: str):
+    """Prompt admin to add laptop retailer ID"""
+    message = """➕ **Add Laptop Retailer ID**
+
+To add a new laptop to the catalog, reply with:
+`/add_laptop <retailer_id>`
+
+**Example:**
+`/add_laptop new_laptop_123`
+
+The new laptop will be immediately available in the catalog! 🚀"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu"),
+            ReplyButton(id="admin_view_stats", title="📊 View Current IDs"),
+        ],
+    )
+
+
+def send_add_repair_prompt(phone_number: str):
+    """Prompt admin to add repair retailer ID"""
+    message = """➕ **Add Repair Service ID**
+
+To add a new repair service to the catalog, reply with:
+`/add_repair <retailer_id>`
+
+**Example:**
+`/add_repair new_repair_456`
+
+The new repair service will be immediately available! 🛠"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu"),
+            ReplyButton(id="admin_view_stats", title="📊 View Current IDs"),
+        ],
+    )
+
+
+def send_remove_laptop_menu(phone_number: str):
+    """Send menu to remove laptop retailer IDs"""
+    try:
+        from catalog_utils import load_laptop_retailer_ids
+        laptop_ids = load_laptop_retailer_ids()
+        
+        if not laptop_ids:
+            message = "ℹ️ **No Laptop IDs to Remove**\n\nThere are currently no laptop retailer IDs in the system."
+            whatsapp.send_interactive_buttons(
+                to=phone_number,
+                body=message,
+                buttons=[ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu")],
+            )
+            return
+        
+        laptop_list = "\n".join([f"• {rid}" for rid in laptop_ids])
+        message = f"""➖ **Remove Laptop Retailer ID**
+
+**Current Laptop IDs:**
+{laptop_list}
+
+To remove a laptop, reply with:
+`/remove_laptop <retailer_id>`
+
+**Example:**
+`/remove_laptop {laptop_ids[0]}`"""
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu"),
+                ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to load laptop IDs for removal")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading laptop IDs: {str(e)}")
+
+
+def send_remove_repair_menu(phone_number: str):
+    """Send menu to remove repair retailer IDs"""
+    try:
+        from catalog_utils import load_repair_retailer_ids
+        repair_ids = load_repair_retailer_ids()
+        
+        if not repair_ids:
+            message = "ℹ️ **No Repair IDs to Remove**\n\nThere are currently no repair retailer IDs in the system."
+            whatsapp.send_interactive_buttons(
+                to=phone_number,
+                body=message,
+                buttons=[ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu")],
+            )
+            return
+        
+        repair_list = "\n".join([f"• {rid}" for rid in repair_ids])
+        message = f"""➖ **Remove Repair Service ID**
+
+**Current Repair IDs:**
+{repair_list}
+
+To remove a repair service, reply with:
+`/remove_repair <retailer_id>`
+
+**Example:**
+`/remove_repair {repair_ids[0]}`"""
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_manage_catalog", title="⬅️ Back to Menu"),
+                ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to load repair IDs for removal")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading repair IDs: {str(e)}")
 
 
 def send_buy_repairs_buttons(phone_number: str):
@@ -654,6 +1185,35 @@ Just reply with your laptop issue and we'll guide you through the next steps."""
             ReplyButton(id="lifetime_support", title="🛡 Support Info"),
         ],
     )
+
+
+def _get_text_content(msg) -> Optional[str]:
+    """Best-effort extraction of text content from a TextMessage.
+    Tries common fields: msg.text (str or object with .body), msg.body, dict-like access.
+    Returns None if not found.
+    """
+    try:
+        # direct string
+        val = getattr(msg, "text", None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        # object with body attribute
+        if hasattr(val, "body"):
+            b = getattr(val, "body")
+            if isinstance(b, str) and b.strip():
+                return b.strip()
+        # some SDKs expose .body directly
+        body = getattr(msg, "body", None)
+        if isinstance(body, str) and body.strip():
+            return body.strip()
+        # dict-like text
+        if isinstance(val, dict):
+            b2 = val.get("body")
+            if isinstance(b2, str) and b2.strip():
+                return b2.strip()
+    except Exception:
+        pass
+    return None
 
 
 if __name__ == "__main__":
