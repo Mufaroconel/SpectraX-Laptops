@@ -216,9 +216,9 @@ Use the admin dashboard buttons for easy management, or use text commands below.
         to=phone_number,
         body=help_message,
         buttons=[
-            ReplyButton(id="admin_manage_catalog", title="📝 Manage Catalog"),
-            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
-            ReplyButton(id="browse_laptops", title="👀 Preview Store"),
+            ReplyButton(id="admin_manage_catalog", title="📝 Catalog"),
+            ReplyButton(id="admin_view_stats", title="📊 View IDs"),
+            ReplyButton(id="browse_laptops", title="👀 Preview"),
         ],
     )
 
@@ -631,6 +631,33 @@ async def receive_message(request: Request):
                     session_id=session_id
                 )
                 send_admin_activity_stats(phone_number)
+            elif user_choice == "admin_analytics_menu":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_analytics_menu",
+                    bot_response="Analytics menu sent",
+                    button_id=user_choice,
+                    admin_flag=True,
+                    session_id=session_id
+                )
+                send_admin_analytics_menu(phone_number)
+            elif user_choice == "admin_detailed_analytics":
+                send_admin_detailed_analytics(phone_number)
+            elif user_choice == "admin_conversation_analytics":
+                send_admin_conversation_analytics(phone_number)
+            elif user_choice == "admin_export_menu":
+                send_admin_export_menu(phone_number)
+            elif user_choice == "admin_export_data":
+                send_admin_export_menu(phone_number)
+            elif user_choice == "admin_export_7days":
+                handle_admin_export_request(phone_number, "7days")
+            elif user_choice == "admin_export_30days":
+                handle_admin_export_request(phone_number, "30days")
+            elif user_choice == "admin_export_admin_only":
+                handle_admin_export_request(phone_number, "admin_only")
+            elif user_choice == "admin_export_conversations":
+                handle_admin_export_request(phone_number, "conversations")
 
         elif isinstance(message, OrderMessage):
             # Mark order message as read (safe)
@@ -808,9 +835,9 @@ Choose an option below 👇"""
         to=phone_number,
         body=message,
         buttons=[
-            ReplyButton(id="browse_laptops", title="� Browse Laptops"),
-            ReplyButton(id="why_spectrax", title="💡 Why SpectraX?"),
-            ReplyButton(id="lifetime_support", title="🛡 Lifetime Support"),
+            ReplyButton(id="browse_laptops", title="💻 Laptops"),
+            ReplyButton(id="why_spectrax", title="💡 Why Us?"),
+            ReplyButton(id="lifetime_support", title="🛡 Support"),
         ],
     )
 
@@ -831,12 +858,14 @@ Welcome back, Admin! 👋
         
         # Get activity stats
         recent_activities = activity_logger.get_recent_activities(5)
+        today_activities = len([a for a in recent_activities if str(a['timestamp']).startswith(datetime.now().strftime("%Y-%m-%d"))])
         total_conversations = len(set(activity['phone_number'] for activity in recent_activities))
         
         message += f"💻 Laptop Products: {laptop_count}\n"
         message += f"🛠 Repair Services: {repair_count}\n"
-        message += f"💬 Recent Conversations: {total_conversations}\n"
-        message += f"📊 Last Activity: {recent_activities[0]['timestamp'] if recent_activities else 'None'}\n\n"
+        message += f"� Today's Activities: {today_activities}\n"
+        message += f"�💬 Recent Users: {total_conversations}\n"
+        message += f"⏰ Last Activity: {recent_activities[0]['timestamp'] if recent_activities else 'None'}\n\n"
     except:
         message += "📊 Loading statistics...\n\n"
     
@@ -846,9 +875,9 @@ Welcome back, Admin! 👋
         to=phone_number,
         body=message,
         buttons=[
-            ReplyButton(id="admin_catalog_management", title="📝 Catalog Management"),
-            ReplyButton(id="admin_order_management", title="📦 Order Management"),
-            ReplyButton(id="admin_activity_stats", title="� Activity Stats"),
+            ReplyButton(id="admin_catalog_management", title="📝 Catalog"),
+            ReplyButton(id="admin_order_management", title="📦 Orders"),
+            ReplyButton(id="admin_analytics_menu", title="📊 Analytics"),
         ],
     )
 
@@ -871,9 +900,9 @@ Manage your product catalog:
         to=phone_number,
         body=message,
         buttons=[
-            ReplyButton(id="admin_add_laptop", title="➕ Add Laptop"),
-            ReplyButton(id="admin_add_repair", title="➕ Add Repair"),
-            ReplyButton(id="admin_remove_laptop", title="➖ Remove Laptop"),
+            ReplyButton(id="admin_add_laptop", title="➕ Laptop"),
+            ReplyButton(id="admin_add_repair", title="➕ Repair"),
+            ReplyButton(id="admin_remove_laptop", title="➖ Laptop"),
         ],
     )
     
@@ -882,9 +911,9 @@ Manage your product catalog:
         to=phone_number,
         body="**More Options:**",
         buttons=[
-            ReplyButton(id="admin_remove_repair", title="➖ Remove Repair"),
-            ReplyButton(id="admin_view_stats", title="📊 View All IDs"),
-            ReplyButton(id="admin_back_main", title="⬅️ Back to Main"),
+            ReplyButton(id="admin_remove_repair", title="➖ Repair"),
+            ReplyButton(id="admin_view_stats", title="📊 View IDs"),
+            ReplyButton(id="admin_back_main", title="⬅️ Main"),
         ],
     )
 
@@ -910,9 +939,9 @@ Manage customer orders and services:
         to=phone_number,
         body=message,
         buttons=[
-            ReplyButton(id="admin_recent_orders", title="📋 Recent Orders"),
-            ReplyButton(id="admin_order_status", title="🔄 Update Status"),
-            ReplyButton(id="admin_customer_comm", title="💬 Customer Comm"),
+            ReplyButton(id="admin_recent_orders", title="📋 Orders"),
+            ReplyButton(id="admin_order_status", title="🔄 Status"),
+            ReplyButton(id="admin_customer_comm", title="💬 Customer"),
         ],
     )
     
@@ -921,9 +950,9 @@ Manage customer orders and services:
         to=phone_number,
         body="**More Options:**",
         buttons=[
-            ReplyButton(id="admin_order_analytics", title="📊 Order Analytics"),
-            ReplyButton(id="admin_delivery_tracking", title="🚚 Delivery Tracking"),
-            ReplyButton(id="admin_back_main", title="⬅️ Back to Main"),
+            ReplyButton(id="admin_order_analytics", title="📊 Analytics"),
+            ReplyButton(id="admin_delivery_tracking", title="🚚 Delivery"),
+            ReplyButton(id="admin_back_main", title="⬅️ Main"),
         ],
     )
 
@@ -1617,6 +1646,281 @@ def send_admin_activity_stats(phone_number: str):
     except Exception as e:
         logger.exception("Failed to get activity stats")
         whatsapp.send_text(to=phone_number, body=f"❌ Error loading activity stats: {str(e)}")
+
+
+def send_admin_analytics_menu(phone_number: str):
+    """Send comprehensive analytics menu to admin"""
+    try:
+        # Get quick stats
+        stats = activity_logger.get_analytics_summary(7)  # Last 7 days
+        
+        if "error" in stats:
+            message = f"📊 **Analytics Dashboard**\n\n❌ {stats['error']}"
+        else:
+            message = f"""📊 **Analytics Dashboard (Last 7 Days)**
+
+**📈 Quick Overview:**
+• Total Activities: {stats['total_activities']}
+• Unique Users: {stats['unique_users']}
+• Admin Actions: {stats['admin_activities']}
+• User Actions: {stats['user_activities']}
+• Avg per User: {stats['avg_activities_per_user']}
+
+**🔥 Top Activities:**"""
+            
+            for activity, count in stats['top_activity_types'][:3]:
+                message += f"\n• {activity}: {count}"
+            
+            message += f"\n\n**⏰ Peak Hours:**"
+            for hour, count in stats['peak_hours'][:2]:
+                time_period = "AM" if int(hour) < 12 else "PM"
+                display_hour = int(hour) if int(hour) <= 12 else int(hour) - 12
+                if display_hour == 0:
+                    display_hour = 12
+                message += f"\n• {display_hour}:00 {time_period}: {count} activities"
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_detailed_analytics", title="📊 Details"),
+                ReplyButton(id="admin_export_data", title="📥 Export"),
+                ReplyButton(id="admin_conversation_analytics", title="💬 Conversations"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get analytics menu")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading analytics: {str(e)}")
+
+
+def send_admin_detailed_analytics(phone_number: str):
+    """Send detailed analytics breakdown"""
+    try:
+        stats_7d = activity_logger.get_analytics_summary(7)
+        stats_30d = activity_logger.get_analytics_summary(30)
+        conv_stats = activity_logger.get_conversation_analytics()
+        
+        message = """📊 **Detailed Analytics Report**
+
+**📅 7-Day vs 30-Day Comparison:**"""
+        
+        if "error" not in stats_7d and "error" not in stats_30d:
+            message += f"""
+• Users (7d/30d): {stats_7d['unique_users']} / {stats_30d['unique_users']}
+• Activities (7d/30d): {stats_7d['total_activities']} / {stats_30d['total_activities']}
+• Sessions (7d/30d): {stats_7d['total_sessions']} / {stats_30d['total_sessions']}
+
+**💬 Conversation Insights:**"""
+            
+            if "error" not in conv_stats:
+                message += f"""
+• Total Conversations: {conv_stats['total_conversations']}
+• Avg Duration: {conv_stats['avg_conversation_duration_minutes']} min
+• Longest Chat: {conv_stats['longest_conversation_minutes']} min
+• Most Engaged Users: {len([u for u, data in conv_stats['user_engagement'].items() if data['total_activities'] > 5])}
+
+**🎯 User Engagement Levels:**
+• High (10+ activities): {len([u for u, data in conv_stats['user_engagement'].items() if data['total_activities'] >= 10])} users
+• Medium (5-9 activities): {len([u for u, data in conv_stats['user_engagement'].items() if 5 <= data['total_activities'] < 10])} users  
+• Low (1-4 activities): {len([u for u, data in conv_stats['user_engagement'].items() if data['total_activities'] < 5])} users"""
+            
+            # Daily activity trend
+            if stats_7d['daily_breakdown']:
+                sorted_days = sorted(stats_7d['daily_breakdown'].items())
+                message += f"\n\n**📅 Daily Activity (Last 7 Days):**"
+                for day, count in sorted_days[-7:]:
+                    date_obj = datetime.strptime(day, "%Y-%m-%d")
+                    day_name = date_obj.strftime("%a")
+                    message += f"\n• {day_name} {day}: {count} activities"
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_export_detailed", title="📥 Export Report"),
+                ReplyButton(id="admin_analytics_menu", title="⬅️ Analytics"),
+                ReplyButton(id="admin_back_main", title="🏠 Main"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get detailed analytics")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading detailed analytics: {str(e)}")
+
+
+def send_admin_conversation_analytics(phone_number: str):
+    """Send conversation-focused analytics"""
+    try:
+        conv_stats = activity_logger.get_conversation_analytics()
+        
+        if "error" in conv_stats:
+            message = f"💬 **Conversation Analytics**\n\n❌ {conv_stats['error']}"
+        else:
+            message = f"""💬 **Conversation Analytics**
+
+**📊 Overview:**
+• Total Conversations: {conv_stats['total_conversations']}
+• Unique Users: {conv_stats['total_users']}
+• Avg Duration: {conv_stats['avg_conversation_duration_minutes']} minutes
+
+**⏱️ Duration Insights:**
+• Longest Chat: {conv_stats['longest_conversation_minutes']} min
+• Shortest Chat: {conv_stats['shortest_conversation_minutes']} min
+
+**🏆 Top Engaged Users:**"""
+            
+            # Show top 5 most engaged users
+            top_users = sorted(
+                conv_stats['user_engagement'].items(), 
+                key=lambda x: x[1]['total_activities'], 
+                reverse=True
+            )[:5]
+            
+            for i, (phone, data) in enumerate(top_users, 1):
+                masked_phone = "..." + phone[-4:] if len(phone) > 4 else phone
+                message += f"\n{i}. {masked_phone}: {data['total_activities']} activities ({data['session_count']} sessions)"
+            
+            message += f"\n\n**📈 User Behavior:**"
+            # Analyze common activity patterns
+            all_top_activities = [data['top_activity'] for data in conv_stats['user_engagement'].values()]
+            activity_frequency = {}
+            for activity in all_top_activities:
+                activity_frequency[activity] = activity_frequency.get(activity, 0) + 1
+            
+            top_behaviors = sorted(activity_frequency.items(), key=lambda x: x[1], reverse=True)[:3]
+            for activity, count in top_behaviors:
+                message += f"\n• {activity}: {count} users prefer this"
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_user_details", title="👤 Users"),
+                ReplyButton(id="admin_analytics_menu", title="⬅️ Analytics"),
+                ReplyButton(id="admin_export_conversations", title="📥 Export"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get conversation analytics")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading conversation analytics: {str(e)}")
+
+
+def send_admin_export_menu(phone_number: str):
+    """Send data export options menu"""
+    message = """📥 **Data Export Options**
+
+**📊 Available Exports:**
+
+**📋 Quick Exports:**
+• Last 7 days (all data)
+• Last 30 days (all data)  
+• Admin activities only
+• User activities only
+• Recent conversations
+
+**🎯 Custom Exports:**
+• Specific date range
+• Filtered by activity type
+• User engagement report
+• Conversation analysis
+
+**📁 Export Formats:**
+All exports are provided as Excel files (.xlsx) with formatted data and summary sheets.
+
+**⚡ Quick Actions:**"""
+    
+    whatsapp.send_interactive_buttons(
+        to=phone_number,
+        body=message,
+        buttons=[
+            ReplyButton(id="admin_export_7days", title="📅 7 Days"),
+            ReplyButton(id="admin_export_30days", title="📅 30 Days"),
+            ReplyButton(id="admin_export_admin_only", title="👨‍💼 Admin Only"),
+        ],
+    )
+
+
+def handle_admin_export_request(phone_number: str, export_type: str):
+    """Handle different types of export requests"""
+    try:
+        from datetime import datetime, timedelta
+        
+        export_file = f"spectrax_export_{export_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        success = False
+        
+        if export_type == "7days":
+            start_date = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            success = activity_logger.export_filtered_data(
+                start_date=start_date,
+                output_file=export_file
+            )
+            description = "Last 7 days activity"
+            
+        elif export_type == "30days":
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            success = activity_logger.export_filtered_data(
+                start_date=start_date,
+                output_file=export_file
+            )
+            description = "Last 30 days activity"
+            
+        elif export_type == "admin_only":
+            success = activity_logger.export_filtered_data(
+                admin_only=True,
+                output_file=export_file
+            )
+            description = "Admin activities only"
+            
+        elif export_type == "conversations":
+            # Export conversation-focused data
+            success = activity_logger.export_filtered_data(
+                activity_types=["message_received", "button_clicked", "order_placed"],
+                output_file=export_file
+            )
+            description = "Conversation activities"
+        
+        if success:
+            # Get file size for info
+            file_size = os.path.getsize(export_file) if os.path.exists(export_file) else 0
+            file_size_mb = round(file_size / (1024 * 1024), 2)
+            
+            message = f"""✅ **Export Complete!**
+
+**📁 File Generated:**
+• Name: {export_file}
+• Content: {description}
+• Size: {file_size_mb} MB
+• Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+**📥 Download Instructions:**
+The file is ready in your project directory. You can access it via:
+• File manager on server
+• Download via admin panel
+• FTP/SFTP transfer
+
+**📊 Next Steps:**
+• Open in Excel for analysis
+• Share with team members
+• Create reports and insights"""
+            
+        else:
+            message = f"❌ **Export Failed**\n\nFailed to generate {description} export. Please check the logs and try again."
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_export_menu", title="📥 Exports"),
+                ReplyButton(id="admin_analytics_menu", title="📊 Analytics"),
+                ReplyButton(id="admin_back_main", title="🏠 Main"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to handle export request")
+        whatsapp.send_text(to=phone_number, body=f"❌ Export error: {str(e)}")
 
 
 def _get_text_content(msg) -> Optional[str]:
