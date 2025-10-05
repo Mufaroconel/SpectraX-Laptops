@@ -20,8 +20,10 @@ import logging
 import uvicorn
 import asyncio
 import inspect
+import uuid
 from typing import List, Tuple, Optional
 from openpyxl import load_workbook
+from activity_logger import activity_logger
 
 
 load_dotenv()
@@ -68,6 +70,11 @@ logger = logging.getLogger(__name__)
 EXCEL_RETAILER_FILE = "spectrax_retailer_ids.xlsx"
 
 
+def generate_session_id() -> str:
+    """Generate a unique session ID for tracking conversations."""
+    return str(uuid.uuid4())[:8]
+
+
 def _read_ids_from_sheet(workbook, sheet_name: str) -> List[str]:
     """Read first-column values from a sheet, skipping header and placeholders."""
     ids: List[str] = []
@@ -75,25 +82,19 @@ def _read_ids_from_sheet(workbook, sheet_name: str) -> List[str]:
         return ids
     ws = workbook[sheet_name]
     for row in ws.iter_rows(min_row=1, max_col=1, values_only=True):
-        val = row[0]
-        if not val:
-            continue
-        s = str(val).strip()
-        if not s or s.lower() == "retailer_id" or s.lower() == "(none configured)":
-            continue
-        ids.append(s)
+        if row[0] and row[0] != "retailer_id":  # Skip header and empty rows
+            ids.append(str(row[0]))
     return ids
 
 
 def load_retailer_ids_from_excel(filepath: str = EXCEL_RETAILER_FILE) -> Tuple[List[str], List[str]]:
     """Return (laptop_ids, repair_ids). If file not found or empty, return empty lists."""
     if not os.path.exists(filepath):
-        logger.info("Retailer Excel not found at %s, will fall back to environment variables", filepath)
         return [], []
     try:
-        wb = load_workbook(filepath, read_only=True, data_only=True)
+        wb = load_workbook(filepath, read_only=True)
     except Exception as exc:
-        logger.exception("Failed to open retailer Excel %s: %s", filepath, exc)
+        logger.exception("Failed to load Excel file: %s", exc)
         return [], []
     laptop_ids = _read_ids_from_sheet(wb, "Laptops")
     repair_ids = _read_ids_from_sheet(wb, "Repairs")
@@ -103,9 +104,9 @@ def load_retailer_ids_from_excel(filepath: str = EXCEL_RETAILER_FILE) -> Tuple[L
 def _env_retailer_ids(*keys: str) -> List[str]:
     ids = []
     for k in keys:
-        v = os.getenv(k)
-        if v and v.strip():
-            ids.append(v.strip())
+        val = os.getenv(k)
+        if val:
+            ids.append(val)
     return ids
 
 
@@ -117,11 +118,9 @@ def safe_mark_as_read(message_id: str):
     ID raises an OAuthException; we log it and continue so the webhook stays healthy.
     """
     try:
-        # attempt to mark as read if API exists
-        if hasattr(whatsapp, "mark_as_read"):
-            whatsapp.mark_as_read(message_id=message_id)
+        whatsapp.mark_as_read(message_id)
     except Exception as exc:
-        logger.exception("Failed to mark message %s as read: %s", message_id, exc)
+        logger.warning("Failed to mark message as read: %s", exc)
 
 
 def is_admin(phone_number: str) -> bool:
@@ -401,6 +400,9 @@ async def receive_message(request: Request):
     try:
         body = await request.body()
         message = whatsapp.parse(body)
+        
+        # Generate session ID for this interaction
+        session_id = generate_session_id()
 
         if isinstance(message, TextMessage):
             # Mark the incoming message as read (safe)
@@ -408,29 +410,122 @@ async def receive_message(request: Request):
             
             # Extract text content safely and check admin commands first
             _text = _get_text_content(message)
-            if _text and handle_admin_command(message.user.phone_number, _text):
+            user_name = getattr(message.user, 'name', 'Unknown')
+            phone_number = message.user.phone_number
+            is_admin_user = is_admin(phone_number)
+            
+            # Log the incoming text message
+            activity_logger.log_activity(
+                phone_number=phone_number,
+                user_name=user_name,
+                activity_type="message_received",
+                message_type="text",
+                user_input=_text,
+                admin_flag=is_admin_user,
+                session_id=session_id
+            )
+            
+            if _text and handle_admin_command(phone_number, _text):
+                # Log admin command execution
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_command",
+                    message_type="text",
+                    user_input=_text,
+                    bot_response="Admin command processed",
+                    admin_flag=True,
+                    session_id=session_id
+                )
                 return {"status": "admin_command_processed"}
             
             # Check if it's admin - send admin welcome instead of regular welcome
-            if is_admin(message.user.phone_number):
-                send_admin_welcome_message(message.user.phone_number)
+            if is_admin_user:
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_welcome",
+                    message_type="text",
+                    bot_response="Admin welcome message sent",
+                    admin_flag=True,
+                    session_id=session_id
+                )
+                send_admin_welcome_message(phone_number)
             else:
-                # Send SpectraX welcome message with quick reply buttons for regular users
-                send_welcome_message(message.user.phone_number)
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="welcome_message",
+                    message_type="text",
+                    bot_response="Welcome message sent",
+                    admin_flag=False,
+                    session_id=session_id
+                )
+                send_welcome_message(phone_number)
 
         elif isinstance(message, InteractiveButtonMessage):
             # Mark the incoming message as read (safe)
             safe_mark_as_read(message.id)
             user_choice = message.reply_id
             phone_number = message.user.phone_number
+            user_name = getattr(message.user, 'name', 'Unknown')
+            is_admin_user = is_admin(phone_number)
+            
+            # Log the button click
+            activity_logger.log_activity(
+                phone_number=phone_number,
+                user_name=user_name,
+                activity_type="button_clicked",
+                message_type="interactive_button",
+                user_input=f"Button: {user_choice}",
+                button_id=user_choice,
+                admin_flag=is_admin_user,
+                session_id=session_id
+            )
             
             if user_choice == "browse_laptops":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="browse_laptops",
+                    bot_response="Laptop catalog options sent",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id
+                )
                 handle_browse_laptops(phone_number)
             elif user_choice == "browse_collection":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="browse_collection",
+                    bot_response="Collection browsing initiated",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id
+                )
                 handle_browse_laptops(phone_number)
             elif user_choice == "why_spectrax":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="why_spectrax",
+                    bot_response="Why SpectraX message sent",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id
+                )
                 send_why_spectrax_message(phone_number)
             elif user_choice == "lifetime_support":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="lifetime_support",
+                    bot_response="Lifetime support info sent",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id
+                )
                 send_lifetime_support_message(phone_number)
             elif user_choice == "see_collection_from_why":
                 handle_browse_laptops(phone_number)
@@ -451,13 +546,51 @@ async def receive_message(request: Request):
                 send_upgrades_accessories_message(phone_number)
             # new button handlers
             elif user_choice == "action_buy_laptop":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="catalog_viewed",
+                    bot_response="Laptop catalog sent",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id,
+                    additional_data={"catalog_type": "laptops"}
+                )
                 handle_buy_laptops(phone_number)
             elif user_choice == "action_repairs":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="catalog_viewed",
+                    bot_response="Repair catalog sent",
+                    button_id=user_choice,
+                    admin_flag=is_admin_user,
+                    session_id=session_id,
+                    additional_data={"catalog_type": "repairs"}
+                )
                 handle_repairs(phone_number)
             # Admin button handlers
             elif user_choice == "admin_catalog_management":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_catalog_management",
+                    bot_response="Catalog management menu sent",
+                    button_id=user_choice,
+                    admin_flag=True,
+                    session_id=session_id
+                )
                 send_admin_catalog_menu(phone_number)
             elif user_choice == "admin_order_management":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_order_management",
+                    bot_response="Order management menu sent",
+                    button_id=user_choice,
+                    admin_flag=True,
+                    session_id=session_id
+                )
                 send_admin_order_menu(phone_number)
             elif user_choice == "admin_manage_catalog":
                 send_admin_catalog_menu(phone_number)
@@ -487,13 +620,33 @@ async def receive_message(request: Request):
                 send_admin_order_analytics(phone_number)
             elif user_choice == "admin_delivery_tracking":
                 send_admin_delivery_tracking(phone_number)
+            elif user_choice == "admin_activity_stats":
+                activity_logger.log_activity(
+                    phone_number=phone_number,
+                    user_name=user_name,
+                    activity_type="admin_activity_stats",
+                    bot_response="Activity statistics sent",
+                    button_id=user_choice,
+                    admin_flag=True,
+                    session_id=session_id
+                )
+                send_admin_activity_stats(phone_number)
 
         elif isinstance(message, OrderMessage):
             # Mark order message as read (safe)
             safe_mark_as_read(message.id)
+            
+            user_name = getattr(message.user, 'name', 'Unknown')
+            phone_number = message.user.phone_number
 
-            # Determine order type based on retailer IDs
+            # Determine order type and prepare additional data
             order_type = "Unknown"
+            order_details = {
+                "catalog_id": message.catalog_id,
+                "order_text": message.order_text,
+                "products": []
+            }
+
             try:
                 from catalog_utils import load_laptop_retailer_ids, load_repair_retailer_ids
                 laptop_ids = load_laptop_retailer_ids()
@@ -502,6 +655,14 @@ async def receive_message(request: Request):
                 # Check product retailer IDs to determine order type
                 order_retailer_ids = []
                 for product in message.products:
+                    product_data = {
+                        "title": getattr(product, "title", getattr(product, "name", "Unnamed")),
+                        "quantity": getattr(product, "quantity", getattr(product, "quantity_ordered", 1)),
+                        "price": str(getattr(product, "retail_price", getattr(product, "price", "N/A"))),
+                        "retailer_id": getattr(product, "product_retailer_id", "N/A")
+                    }
+                    order_details["products"].append(product_data)
+                    
                     if hasattr(product, 'product_retailer_id'):
                         order_retailer_ids.append(product.product_retailer_id)
                 
@@ -515,9 +676,26 @@ async def receive_message(request: Request):
                     order_type = "REPAIR"
                 elif laptop_count > 0 and repair_count > 0:
                     order_type = "MIXED (LAPTOP + REPAIR)"
+                    
+                order_details["order_type"] = order_type
+                order_details["laptop_count"] = laptop_count
+                order_details["repair_count"] = repair_count
                 
             except Exception as e:
                 logger.exception("Failed to determine order type: %s", e)
+
+            # Log the order
+            activity_logger.log_activity(
+                phone_number=phone_number,
+                user_name=user_name,
+                activity_type="order_placed",
+                message_type="order",
+                user_input=f"Order placed: {order_type}",
+                bot_response="Order confirmation sent",
+                admin_flag=False,
+                session_id=session_id,
+                additional_data=order_details
+            )
 
             # Build enhanced order summary
             summary_lines = [
@@ -650,9 +828,17 @@ Welcome back, Admin! 👋
         from catalog_utils import load_laptop_retailer_ids, load_repair_retailer_ids
         laptop_count = len(load_laptop_retailer_ids())
         repair_count = len(load_repair_retailer_ids())
-        message += f"💻 Laptop Products: {laptop_count}\n🛠 Repair Services: {repair_count}\n\n"
+        
+        # Get activity stats
+        recent_activities = activity_logger.get_recent_activities(5)
+        total_conversations = len(set(activity['phone_number'] for activity in recent_activities))
+        
+        message += f"💻 Laptop Products: {laptop_count}\n"
+        message += f"🛠 Repair Services: {repair_count}\n"
+        message += f"💬 Recent Conversations: {total_conversations}\n"
+        message += f"📊 Last Activity: {recent_activities[0]['timestamp'] if recent_activities else 'None'}\n\n"
     except:
-        message += "📊 Loading product counts...\n\n"
+        message += "📊 Loading statistics...\n\n"
     
     message += "**Management Areas:**"
     
@@ -661,8 +847,8 @@ Welcome back, Admin! 👋
         body=message,
         buttons=[
             ReplyButton(id="admin_catalog_management", title="📝 Catalog Management"),
-            ReplyButton(id="admin_order_management", title="� Order Management"),
-            ReplyButton(id="browse_laptops", title="👀 Preview Store"),
+            ReplyButton(id="admin_order_management", title="📦 Order Management"),
+            ReplyButton(id="admin_activity_stats", title="� Activity Stats"),
         ],
     )
 
@@ -1395,7 +1581,54 @@ Just reply with your laptop issue and we'll guide you through the next steps."""
     )
 
 
+def send_admin_activity_stats(phone_number: str):
+    """Send activity statistics to admin"""
+    try:
+        recent_activities = activity_logger.get_recent_activities(10)
+        
+        if not recent_activities:
+            message = "📊 **Activity Statistics**\n\nNo recent activities found."
+        else:
+            message = "📊 **Recent Activity (Last 10)**\n\n"
+            
+            for activity in recent_activities:
+                time_str = activity['timestamp']
+                phone = activity['phone_number'][-4:]  # Last 4 digits for privacy
+                activity_type = activity['activity_type']
+                admin_flag = "👨‍💼" if activity['admin_flag'] else "👤"
+                
+                message += f"{admin_flag} {time_str} - ...{phone} - {activity_type}\n"
+            
+            # Get unique users count
+            unique_users = len(set(activity['phone_number'] for activity in recent_activities))
+            message += f"\n📈 **Summary:**\n"
+            message += f"• Unique users: {unique_users}\n"
+            message += f"• Total activities: {len(recent_activities)}\n"
+        
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=[
+                ReplyButton(id="admin_back_main", title="⬅️ Back to Main"),
+                ReplyButton(id="admin_order_management", title="📦 Orders"),
+            ],
+        )
+        
+    except Exception as e:
+        logger.exception("Failed to get activity stats")
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading activity stats: {str(e)}")
+
+
 def _get_text_content(msg) -> Optional[str]:
+    """Safely extract text content from a message."""
+    try:
+        if hasattr(msg, 'text'):
+            return msg.text
+        elif hasattr(msg, 'body'):
+            return msg.body
+        return None
+    except Exception:
+        return None
     """Best-effort extraction of text content from a TextMessage.
     Tries common fields: msg.text (str or object with .body), msg.body, dict-like access.
     Returns None if not found.
