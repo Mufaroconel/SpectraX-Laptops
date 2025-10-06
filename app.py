@@ -41,7 +41,7 @@ PRODUCT_RETAILER_ID_REPAIR_2 = os.getenv("PRODUCT_RETAILER_ID_REPAIR_2")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 
 # Admin configuration
-ADMIN_NUMBER = "263711475883"
+ADMIN_NUMBERS = ["263718516319" , "263711475883"]
 
 if not VERIFY_TOKEN:
     raise ValueError("VERIFY_TOKEN environment variable is not set")
@@ -68,6 +68,9 @@ whatsapp = WhatsApp(access_token=ACCESS_TOKEN, phone_number_id=PHONE_NUMBER_ID)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Keep a small in-memory map of last order viewed by each admin (phone -> order_id)
+ADMIN_LAST_VIEWED: dict = {}
 
 EXCEL_RETAILER_FILE = "spectrax_retailer_ids.xlsx"
 
@@ -127,7 +130,7 @@ def safe_mark_as_read(message_id: str):
 
 def is_admin(phone_number: str) -> bool:
     """Check if the phone number is an admin."""
-    return phone_number == ADMIN_NUMBER
+    return phone_number in ADMIN_NUMBERS
 
 
 def handle_admin_command(phone_number: str, message_text: str):
@@ -265,6 +268,11 @@ def send_order_details_message(phone_number: str, order_details: dict):
                 ReplyButton(id="admin_order_dashboard", title="⬅️ Dashboard"),
             ],
         )
+        # remember which order this admin is viewing for quick actions
+        try:
+            ADMIN_LAST_VIEWED[phone_number] = order_id
+        except Exception:
+            pass
         
     except Exception as e:
         logger.exception("Failed to send order details")
@@ -699,6 +707,104 @@ async def receive_message(request: Request):
             # Order management handlers (placeholders for now)
             elif user_choice == "admin_recent_orders":
                 send_admin_recent_orders(phone_number)
+            elif user_choice.startswith("admin_select_order:"):
+                # Admin selected a specific order from the list
+                try:
+                    order_id = user_choice.split(':', 1)[1]
+                    details = order_logger.get_order_details(order_id)
+                    if not details:
+                        whatsapp.send_text(to=phone_number, body=f"❌ Could not load order {order_id} details.")
+                    else:
+                        # Remember last viewed order for quick actions
+                        ADMIN_LAST_VIEWED[phone_number] = order_id
+                        send_order_details_message(phone_number, details)
+                except Exception as e:
+                    logger.exception("Failed to open selected order: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Error opening order: {str(e)}")
+
+            elif user_choice == "admin_view_all_orders":
+                try:
+                    orders = order_logger.get_orders_by_status(None)
+                    non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
+                    display = non_completed[:10] if non_completed else (orders[:10] if orders else [])
+
+                    if not display:
+                        whatsapp.send_text(to=phone_number, body="📋 No orders found.")
+                    else:
+                        msg = f"📋 Orders ({len(display)})\n\n"
+                        buttons = []
+                        for o in display[:3]:
+                            oid = o.get('order_id')
+                            short = (oid[:10] + '...') if len(oid) > 10 else oid
+                            customer = (o.get('customer_name') or 'Unknown')[:16]
+                            status = o.get('status') or 'NEW'
+                            amount = o.get('total_amount') or 0
+                            msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
+                            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=short))
+
+                        buttons.extend([
+                            ReplyButton(id="admin_filter_non_completed", title="🚫 NotDone"),
+                            ReplyButton(id="admin_export_orders", title="📥 Export"),
+                        ])
+
+                        whatsapp.send_interactive_buttons(to=phone_number, body=msg, buttons=buttons)
+                except Exception as e:
+                    logger.exception("Failed to fetch all orders: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Error fetching orders: {str(e)}")
+
+            elif user_choice == "admin_filter_non_completed":
+                try:
+                    orders = order_logger.get_orders_by_status(None)
+                    non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
+                    if not non_completed:
+                        whatsapp.send_text(to=phone_number, body="✅ No pending orders. All orders are completed.")
+                    else:
+                        msg = f"🚫 Non-Completed Orders ({len(non_completed)})\n\n"
+                        buttons = []
+                        for o in non_completed[:3]:
+                            oid = o.get('order_id')
+                            short = (oid[:10] + '...') if len(oid) > 10 else oid
+                            customer = (o.get('customer_name') or 'Unknown')[:16]
+                            status = o.get('status') or 'NEW'
+                            amount = o.get('total_amount') or 0
+                            msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
+                            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=short))
+
+                        buttons.append(ReplyButton(id="admin_export_orders", title="📥 Export"))
+                        whatsapp.send_interactive_buttons(to=phone_number, body=msg, buttons=buttons)
+                except Exception as e:
+                    logger.exception("Failed to filter non-completed orders: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Error: {str(e)}")
+
+            elif user_choice == "admin_export_orders":
+                try:
+                    export_file = f"orders_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                    import shutil
+                    if os.path.exists(order_logger.file_path):
+                        shutil.copy(order_logger.file_path, export_file)
+                        whatsapp.send_text(to=phone_number, body=f"✅ Orders export ready: {export_file} (check server files)")
+                    else:
+                        whatsapp.send_text(to=phone_number, body="❌ Orders file not found to export.")
+                except Exception as e:
+                    logger.exception("Failed to export orders: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Export error: {str(e)}")
+            elif user_choice == "admin_process_next":
+                # Admin requested to process the next NEW order
+                try:
+                    new_orders = order_logger.get_orders_by_status("NEW")
+                    if not new_orders:
+                        whatsapp.send_text(to=phone_number, body="ℹ️ No new orders to process.")
+                    else:
+                        next_order = new_orders[0]
+                        order_id = next_order.get('order_id')
+                        details = order_logger.get_order_details(order_id)
+                        if details:
+                            send_order_details_message(phone_number, details)
+                        else:
+                            whatsapp.send_text(to=phone_number, body=f"❌ Could not load order {order_id} details.")
+                except Exception as e:
+                    logger.exception("Failed to fetch next order: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Error fetching next order: {str(e)}")
             elif user_choice == "admin_order_status":
                 send_admin_order_status_menu(phone_number)
             elif user_choice == "admin_customer_comm":
@@ -755,6 +861,37 @@ async def receive_message(request: Request):
                 send_admin_order_details_menu(phone_number)
             elif user_choice == "admin_mark_processing":
                 whatsapp.send_text(to=phone_number, body="✅ Order marked as processing. Customer will be notified of status update.")
+            elif user_choice == "admin_notify_customer":
+                # Notify the customer for the last viewed order by this admin
+                try:
+                    last = ADMIN_LAST_VIEWED.get(phone_number)
+                    if not last:
+                        whatsapp.send_text(to=phone_number, body="ℹ️ No recent order in view. Open an order first to notify its customer.")
+                    else:
+                        details = order_logger.get_order_details(last)
+                        if not details:
+                            whatsapp.send_text(to=phone_number, body=f"❌ Could not retrieve order {last} details.")
+                        else:
+                            cust_phone = details.get('customer_phone')
+                            sanitized = ''.join(ch for ch in str(cust_phone or '') if ch.isdigit())
+                            if not sanitized:
+                                whatsapp.send_text(to=phone_number, body="❌ Customer phone invalid or missing.")
+                            else:
+                                notify_msg = f"📦 Update on your order {last}: Status - {details.get('status')}.\nWe will follow up shortly."
+                                whatsapp.send_text(to=sanitized, body=notify_msg)
+                                whatsapp.send_text(to=phone_number, body=f"✅ Notification sent to customer {sanitized}.")
+                                activity_logger.log_activity(
+                                    phone_number=phone_number,
+                                    user_name="Admin",
+                                    activity_type="admin_notify_customer",
+                                    message_type="button",
+                                    user_input=f"notify:{last}",
+                                    bot_response=f"Notified customer {sanitized} for order {last}",
+                                    admin_flag=True
+                                )
+                except Exception as e:
+                    logger.exception("Failed to notify customer via admin button: %s", e)
+                    whatsapp.send_text(to=phone_number, body=f"❌ Error notifying customer: {str(e)}")
             elif user_choice == "admin_request_payment":
                 whatsapp.send_text(to=phone_number, body="💳 Payment request template sent to customer. Follow up via phone for confirmation.")
             elif user_choice == "admin_schedule_delivery":
@@ -934,36 +1071,35 @@ async def receive_message(request: Request):
             
             admin_message = "\n".join(admin_summary_lines)
             
-            # Send detailed order notification to admin
+            # Send detailed order notification to all admins
             try:
-                whatsapp.send_interactive_buttons(
-                    to=ADMIN_NUMBER,
-                    body=admin_message,
-                    buttons=[
-                        ReplyButton(id="admin_process_order", title="✅ Process Order"),
-                        ReplyButton(id="admin_contact_customer", title="📞 Contact"),
-                        ReplyButton(id="admin_order_details", title="📋 Details"),
-                    ],
-                )
-                
-                # Also log the admin notification
-                activity_logger.log_activity(
-                    phone_number=ADMIN_NUMBER,
-                    user_name="System",
-                    activity_type="admin_order_notification",
-                    message_type="system",
-                    bot_response=f"Order notification sent for {order_type} order from {phone_number}",
-                    admin_flag=True,
-                    session_id=session_id,
-                    additional_data={
-                        "customer_phone": phone_number,
-                        "customer_name": user_name,
-                        "order_type": order_type,
-                        "order_value": total_amount,
-                        "product_count": len(message.products)
-                    }
-                )
-                
+                for admin_number in ADMIN_NUMBERS:
+                    whatsapp.send_interactive_buttons(
+                        to=admin_number,
+                        body=admin_message,
+                        buttons=[
+                            ReplyButton(id="admin_process_order", title="✅ Process Order"),
+                            ReplyButton(id="admin_contact_customer", title="📞 Contact"),
+                            ReplyButton(id="admin_order_details", title="📋 Details"),
+                        ],
+                    )
+                    # Also log the admin notification
+                    activity_logger.log_activity(
+                        phone_number=admin_number,
+                        user_name="System",
+                        activity_type="admin_order_notification",
+                        message_type="system",
+                        bot_response=f"Order notification sent for {order_type} order from {phone_number}",
+                        admin_flag=True,
+                        session_id=session_id,
+                        additional_data={
+                            "customer_phone": phone_number,
+                            "customer_name": user_name,
+                            "order_type": order_type,
+                            "order_value": total_amount,
+                            "product_count": len(message.products)
+                        }
+                    )
             except Exception as admin_error:
                 logger.exception("Failed to send order notification to admin: %s", admin_error)
 
@@ -1024,12 +1160,26 @@ Thanks for choosing SpectraX Laptops! 💻✨"""
 
 def send_welcome_message(phone_number):
     """Send the initial welcome message with quick reply buttons for laptop offerings"""
-    message = """� Welcome to SpectraX Laptops!  
-Your trusted partner for premium laptops with lifetime support 🚀  
+    message = """⚡ 🔥 SpectraX — Protection That Lasts a Lifetime
 
-🎁 **Special Launch Offer**: Buy any laptop → get FREE Starter Essentials software + lifetime repair tracking when registered!
+💻 Welcome to SpectraX Laptops —
+where your laptop stays fast, safe, and supported for life. 🚀
 
-Choose an option below 👇"""
+We don’t just sell laptops —
+we stand by them through every click, crash, and update 💪
+
+🛠️ Lifetime Repair Protection
+→ Free fixes for all software & performance issues
+→ Huge discounts on hardware repairs (you only pay for parts)
+→ Priority support — always first in line
+
+💾 Your data stays safe
+⚙️ Your speed stays blazing
+💡 Your system stays updated
+
+SpectraX isn’t just a brand — it’s your laptop’s lifetime bodyguard 🔥
+
+👇 Tap below to explore your SpectraX experience."""
     
     whatsapp.send_interactive_buttons(
         to=phone_number,
@@ -1220,32 +1370,34 @@ def handle_admin_order_update(phone_number: str, message_text: str):
                 # Get order details for confirmation
                 order_details = order_logger.get_order_details(order_id)
                 if order_details:
-                    customer_name = order_details['customer_name'] or "Unknown"
-                    customer_phone = order_details['customer_phone']
-                    
+                    customer_name = order_details.get('customer_name') or "Unknown"
+                    customer_phone = order_details.get('customer_phone') or None
+                    old_status = order_details.get('status', 'Unknown')
+
                     confirmation_message = f"""✅ **Order Updated Successfully**
 
 **Order ID:** {order_id}
+**Previous Status:** {old_status}
 **New Status:** {status}
 **Customer:** {customer_name}
 **Notes Added:** {notes or "None"}
 
 **Next Steps:**
-• Notify customer of status change
+• Notify customer of status change (optional)
 • Update inventory if completed
 • Process refund if cancelled"""
-                    
+
                     whatsapp.send_interactive_buttons(
                         to=phone_number,
                         body=confirmation_message,
                         buttons=[
-                            ReplyButton(id="admin_notify_customer", title="📞 Notify Customer"),
-                            ReplyButton(id="admin_order_details", title="📋 Order Details"),
-                            ReplyButton(id="admin_new_orders", title="🆕 New Orders"),
+                            ReplyButton(id="admin_notify_customer", title="📞 Notify"),
+                            ReplyButton(id="admin_order_details", title="📋 Details"),
+                            ReplyButton(id="admin_new_orders", title="🆕 New"),
                         ],
                     )
-                    
-                    # Log the admin action
+
+                    # Log the admin action (capture old and new status)
                     activity_logger.log_activity(
                         phone_number=phone_number,
                         user_name="Admin",
@@ -1256,11 +1408,22 @@ def handle_admin_order_update(phone_number: str, message_text: str):
                         admin_flag=True,
                         additional_data={
                             "order_id": order_id,
-                            "old_status": order_details.get('status', 'Unknown'),
+                            "old_status": old_status,
                             "new_status": status,
                             "notes": notes
                         }
                     )
+
+                    # Optionally notify the customer immediately for critical updates
+                    try:
+                        if customer_phone:
+                            # Ensure phone is in local format expected by WhatsApp (digits only)
+                            sanitized = ''.join(ch for ch in str(customer_phone) if ch.isdigit())
+                            if sanitized:
+                                notify_text = f"📦 Order {order_id} status updated to {status}.\nNotes: {notes or 'None'}"
+                                whatsapp.send_text(to=sanitized, body=notify_text)
+                    except Exception:
+                        logger.exception("Failed to notify customer after admin update")
                 else:
                     whatsapp.send_text(to=phone_number, body="✅ Order updated but couldn't retrieve details.")
             else:
@@ -1518,30 +1681,52 @@ To remove a repair service, reply with:
 
 
 def send_admin_recent_orders(phone_number: str):
-    """Send recent orders overview (placeholder)"""
-    message = """📋 **Recent Orders**
+    """Send recent orders overview using the order logger."""
+    try:
+        recent = order_logger.get_recent_orders(10)
+        if not recent:
+            message = "🆕 **Recent Orders**\n\nNo recent orders found."
+            whatsapp.send_interactive_buttons(
+                to=phone_number,
+                body=message,
+                buttons=[
+                    ReplyButton(id="admin_back_main", title="🏠 Main Menu"),
+                ],
+            )
+            return
 
-**Last 24 Hours:**
-• 3 Laptop Orders
-• 2 Repair Services
-• 1 Mixed Order
+        message = f"🆕 **Recent Orders ({len(recent)})**\n\n"
+        # Build a readable list and selection buttons (WhatsApp limits buttons; show first 3 selectable)
+        for o in recent:
+            oid = o.get('order_id')
+            short = oid[:12] + '...' if len(oid) > 12 else oid
+            customer = (o.get('customer_name') or 'Unknown')[:18]
+            amount = o.get('total_amount') or 0
+            status = (o.get('status') or 'NEW')
+            ts = o.get('timestamp')
+            message += f"{short} | {customer} | ${float(amount):.2f} | {status} | {ts}\n"
 
-**Status Overview:**
-✅ 4 Completed
-🔄 2 Processing
-📦 0 Pending
+        buttons = []
+        for o in recent[:3]:
+            oid = o.get('order_id')
+            short = oid[:10] if len(oid) > 10 else oid
+            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=f"{short}"))
 
-*Note: Full order management system coming soon!*"""
-    
-    whatsapp.send_interactive_buttons(
-        to=phone_number,
-        body=message,
-        buttons=[
-            ReplyButton(id="admin_order_status", title="🔄 Update Status"),
-            ReplyButton(id="admin_order_management", title="⬅️ Back to Orders"),
-            ReplyButton(id="admin_back_main", title="🏠 Main Menu"),
-        ],
-    )
+        # Add navigation and export buttons
+        buttons.extend([
+            ReplyButton(id="admin_process_next", title="⚡ Next"),
+            ReplyButton(id="admin_view_all_orders", title="📋 All"),
+            ReplyButton(id="admin_export_orders", title="📥 Export"),
+        ])
+
+        whatsapp.send_interactive_buttons(
+            to=phone_number,
+            body=message,
+            buttons=buttons,
+        )
+    except Exception as e:
+        logger.exception("Failed to get recent orders: %s", e)
+        whatsapp.send_text(to=phone_number, body=f"❌ Error loading recent orders: {str(e)}")
 
 
 def send_admin_order_status_menu(phone_number: str):
@@ -1707,9 +1892,15 @@ def handle_buy_laptops(phone_number: str):
         )
         return
 
-    header = "SpectraX Laptop Catalog"
-    body = "💻 Browse our featured laptops. Each purchase includes FREE Starter Essentials software + lifetime repair tracking when registered."
-    footer = "Tap a laptop to view details & order."
+    header = "🔥 SpectraX Laptop Lineup"
+    body = (
+        "💻 Power that lasts. Protection that never quits.\n\n"
+        "Every SpectraX laptop comes with:\n"
+        "✨ FREE Starter Essentials pack\n"
+        "🛠️ Lifetime Repair Coverage — pay only for parts, software fixes are free\n"
+        "🚀 Ongoing updates to keep your laptop blazing fast & secure."
+    )
+    footer = "👇 Tap to view your next-level laptop."
 
     try:
         # Use the safe catalog compatibility function
@@ -1753,9 +1944,15 @@ def handle_repairs(phone_number: str):
         )
         return
 
-    header = "SpectraX Repair Packages"
-    body = "🛠 Choose a repair package. Includes diagnostics and software cleanup when registered."
-    footer = "Tap a repair package to view details & book."
+    header = "⚡ SpectraX Repair Protection"
+    body = (
+        "Your laptop deserves care that never quits. 💻💨\n\n"
+        "When you’re a registered SpectraX customer, you unlock:\n"
+        "🧠 FREE software fixes & performance boosts\n"
+        "🔧 Discounted hardware repairs — parts only\n"
+        "📈 Lifetime tracking & priority repair service."
+    )
+    footer = "👇 Tap a package to keep your laptop blazing for life."
 
     try:
         # Use the safe catalog compatibility function

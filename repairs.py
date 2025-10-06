@@ -26,9 +26,15 @@ def handle_repairs(whatsapp, phone_number: str, catalog_id: Optional[str] = None
             logger.exception("Failed to send no-configured-repairs message")
         return
 
-    header = "SpectraX Repair Packages"
-    body = "🛠 Choose a repair package. Includes diagnostics and software cleanup when registered."
-    footer = "Tap a repair package to view details & book."
+    header = "⚡ SpectraX Repair Protection"
+    body = (
+        "Your laptop deserves care that never quits. 💻💨\n\n"
+        "When you’re a registered SpectraX customer, you unlock:\n"
+        "🧠 FREE software fixes & performance boosts\n"
+        "🔧 Discounted hardware repairs — parts only\n"
+        "📈 Lifetime tracking & priority repair service."
+    )
+    footer = "👇 Tap a package to keep your laptop blazing for life."
 
     logger.info("Sending repair catalog with IDs: %s", repair_ids)
     try:
