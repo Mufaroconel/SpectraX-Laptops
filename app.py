@@ -23,6 +23,7 @@ import inspect
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
+from typing import Iterator
 from openpyxl import load_workbook
 from activity_logger import activity_logger
 from order_logger import order_logger
@@ -71,6 +72,46 @@ logger = logging.getLogger(__name__)
 
 # Keep a small in-memory map of last order viewed by each admin (phone -> order_id)
 ADMIN_LAST_VIEWED: dict = {}
+
+
+# Helpers to safely send reply buttons respecting WhatsApp limits (1-3 buttons, title <=20 chars)
+def _chunk_buttons(buttons: List[ReplyButton], size: int = 3) -> Iterator[List[ReplyButton]]:
+    for i in range(0, len(buttons), size):
+        yield buttons[i : i + size]
+
+
+def _send_buttons_paginated(to: str, body: str, buttons: List[ReplyButton]):
+    """Send interactive buttons in pages of up to 3. If buttons is empty, send a text fallback."""
+    if not buttons:
+        whatsapp.send_text(to=to, body=body)
+        return
+
+    # normalize titles to allowed length
+    for b in buttons:
+        try:
+            title = (b.title or b.id or "Option").strip()
+            if len(title) == 0:
+                title = (b.id or "Option")[:20]
+            if len(title) > 20:
+                title = title[:20]
+            b.title = title
+        except Exception:
+            # best-effort: leave as-is
+            pass
+
+    # send in chunks
+    first = True
+    for chunk in _chunk_buttons(buttons, 3):
+        try:
+            chunk_body = body if first else "More options:"
+            whatsapp.send_interactive_buttons(to=to, body=chunk_body, buttons=chunk)
+        except Exception as exc:
+            logger.exception("Failed to send button chunk: %s", exc)
+            # fallback to text listing
+            lines = [f"{c.title} (id:{c.id})" for c in chunk]
+            whatsapp.send_text(to=to, body=chunk_body + "\n\n" + "\n".join(lines))
+        first = False
+
 
 EXCEL_RETAILER_FILE = "spectrax_retailer_ids.xlsx"
 
@@ -723,58 +764,57 @@ async def receive_message(request: Request):
                     whatsapp.send_text(to=phone_number, body=f"❌ Error opening order: {str(e)}")
 
             elif user_choice == "admin_view_all_orders":
-                try:
-                    orders = order_logger.get_orders_by_status(None)
-                    non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
-                    display = non_completed[:10] if non_completed else (orders[:10] if orders else [])
+                orders = order_logger.get_orders_by_status(None)
+                non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
+                display = non_completed[:10] if non_completed else (orders[:10] if orders else [])
 
-                    if not display:
-                        whatsapp.send_text(to=phone_number, body="📋 No orders found.")
-                    else:
-                        msg = f"📋 Orders ({len(display)})\n\n"
-                        buttons = []
-                        for o in display[:3]:
-                            oid = o.get('order_id')
-                            short = (oid[:10] + '...') if len(oid) > 10 else oid
-                            customer = (o.get('customer_name') or 'Unknown')[:16]
-                            status = o.get('status') or 'NEW'
-                            amount = o.get('total_amount') or 0
-                            msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
-                            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=short))
+                if not display:
+                    whatsapp.send_text(to=phone_number, body="📋 No orders found.")
+                else:
+                    msg = f"📋 Orders ({len(display)})\n\n"
+                    buttons = []
+                    seen_titles = set()
+                    for i, o in enumerate(display[:3]):
+                        oid = o.get('order_id')
+                        short = (oid[:10] + '...') if len(oid) > 10 else oid
+                        # Make sure button title is unique by adding a number if needed
+                        title = short
+                        while title in seen_titles:
+                            title = f"{short} ({i+1})"
+                        seen_titles.add(title)
+                        
+                        customer = (o.get('customer_name') or 'Unknown')[:16]
+                        status = o.get('status') or 'NEW'
+                        amount = o.get('total_amount') or 0
+                        msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
+                        buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=title))
 
-                        buttons.extend([
-                            ReplyButton(id="admin_filter_non_completed", title="🚫 NotDone"),
-                            ReplyButton(id="admin_export_orders", title="📥 Export"),
-                        ])
+                    buttons.extend([
+                        ReplyButton(id="admin_filter_non_completed", title="🚫 NotDone"),
+                        ReplyButton(id="admin_export_orders", title="📥 Export"),
+                    ])
 
-                        whatsapp.send_interactive_buttons(to=phone_number, body=msg, buttons=buttons)
-                except Exception as e:
-                    logger.exception("Failed to fetch all orders: %s", e)
-                    whatsapp.send_text(to=phone_number, body=f"❌ Error fetching orders: {str(e)}")
+                    _send_buttons_paginated(phone_number, msg, buttons)
 
             elif user_choice == "admin_filter_non_completed":
-                try:
-                    orders = order_logger.get_orders_by_status(None)
-                    non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
-                    if not non_completed:
-                        whatsapp.send_text(to=phone_number, body="✅ No pending orders. All orders are completed.")
-                    else:
-                        msg = f"🚫 Non-Completed Orders ({len(non_completed)})\n\n"
-                        buttons = []
-                        for o in non_completed[:3]:
-                            oid = o.get('order_id')
-                            short = (oid[:10] + '...') if len(oid) > 10 else oid
-                            customer = (o.get('customer_name') or 'Unknown')[:16]
-                            status = o.get('status') or 'NEW'
-                            amount = o.get('total_amount') or 0
-                            msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
-                            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=short))
+                orders = order_logger.get_orders_by_status(None)
+                non_completed = [o for o in orders if (o.get('status') or 'NEW') != 'COMPLETED']
+                if not non_completed:
+                    whatsapp.send_text(to=phone_number, body="✅ No pending orders. All orders are completed.")
+                else:
+                    msg = f"🚫 Non-Completed Orders ({len(non_completed)})\n\n"
+                    buttons = []
+                    for o in non_completed[:3]:
+                        oid = o.get('order_id')
+                        short = (oid[:10] + '...') if len(oid) > 10 else oid
+                        customer = (o.get('customer_name') or 'Unknown')[:16]
+                        status = o.get('status') or 'NEW'
+                        amount = o.get('total_amount') or 0
+                        msg += f"{short} | {customer} | ${float(amount):.2f} | {status}\n"
+                        buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=short))
 
-                        buttons.append(ReplyButton(id="admin_export_orders", title="📥 Export"))
-                        whatsapp.send_interactive_buttons(to=phone_number, body=msg, buttons=buttons)
-                except Exception as e:
-                    logger.exception("Failed to filter non-completed orders: %s", e)
-                    whatsapp.send_text(to=phone_number, body=f"❌ Error: {str(e)}")
+                    buttons.append(ReplyButton(id="admin_export_orders", title="📥 Export"))
+                    _send_buttons_paginated(phone_number, msg, buttons)
 
             elif user_choice == "admin_export_orders":
                 try:
@@ -1706,27 +1746,30 @@ def send_admin_recent_orders(phone_number: str):
             ts = o.get('timestamp')
             message += f"{short} | {customer} | ${float(amount):.2f} | {status} | {ts}\n"
 
-        buttons = []
-        for o in recent[:3]:
-            oid = o.get('order_id')
-            short = oid[:10] if len(oid) > 10 else oid
-            buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=f"{short}"))
+            buttons = []
+            seen_titles = set()
+            for i, o in enumerate(recent[:3], 1):
+                oid = o.get('order_id')
+                short = oid[:7] if len(oid) > 7 else oid
+                
+                # Ensure unique button titles
+                title = f"📝 {short}"
+                while title in seen_titles:
+                    title = f"📝 {short} ({i})"
+                seen_titles.add(title)
+                
+                buttons.append(ReplyButton(id=f"admin_select_order:{oid}", title=title))
 
-        # Add navigation and export buttons
-        buttons.extend([
-            ReplyButton(id="admin_process_next", title="⚡ Next"),
-            ReplyButton(id="admin_view_all_orders", title="📋 All"),
-            ReplyButton(id="admin_export_orders", title="📥 Export"),
-        ])
-
-        whatsapp.send_interactive_buttons(
-            to=phone_number,
-            body=message,
-            buttons=buttons,
-        )
+            # Add navigation and export buttons with distinct icons
+            buttons.extend([
+                ReplyButton(id="admin_process_next", title="⏩ Next"),
+                ReplyButton(id="admin_view_all_orders", title="� List"),
+                ReplyButton(id="admin_export_orders", title="� Save"),
+            ])        
+            _send_buttons_paginated(phone_number, message, buttons)
     except Exception as e:
         logger.exception("Failed to get recent orders: %s", e)
-        whatsapp.send_text(to=phone_number, body=f"❌ Error loading recent orders: {str(e)}")
+        whatsaspp.send_text(to=phone_number, body=f"❌ Error loading recent orders: {str(e)}")
 
 
 def send_admin_order_status_menu(phone_number: str):
@@ -1981,7 +2024,7 @@ def send_why_spectrax_message(phone_number: str):
     message = """✨ Why SpectraX Laptops?  
 Because we don't just sell laptops — we provide a complete ecosystem for your digital success.  
 
-✅ Premium laptop models with latest specs  
+✅ Premium laptop models with latest specs   
 ✅ FREE Starter Essentials software suite  
 ✅ Lifetime repair tracking & support  
 ✅ Real-time service updates via WhatsApp  

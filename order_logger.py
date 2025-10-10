@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import logging
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,38 @@ class OrderLogger:
                 "processed_by", "processing_timestamp", "delivery_address", "payment_method"
             ]
             ws.append(headers)
+
+    def search_orders(self, query: str, criteria: str = 'all') -> List[Dict[str, Any]]:
+        """
+        Search orders based on various criteria.
+        
+        Args:
+            query (str): The search query
+            criteria (str): The search criteria ('phone', 'order_id', 'name', 'status', 'all')
+        
+        Returns:
+            List of matching orders
+        """
+        try:
+            df = pd.read_excel(self.file_path)
+            query = str(query).lower()
+            
+            if criteria == 'phone':
+                mask = df['customer_phone'].astype(str).str.contains(query, case=False, na=False)
+            elif criteria == 'order_id':
+                mask = df['order_id'].astype(str).str.contains(query, case=False, na=False)
+            elif criteria == 'name':
+                mask = df['customer_name'].astype(str).str.contains(query, case=False, na=False)
+            elif criteria == 'status':
+                mask = df['status'].astype(str).str.contains(query, case=False, na=False)
+            else:  # 'all'
+                mask = df.apply(lambda x: x.astype(str).str.contains(query, case=False, na=False)).any(axis=1)
+            
+            results = df[mask].to_dict('records')
+            return results
+        except Exception as e:
+            logger.exception(f"Failed to search orders: {e}")
+            return []
             
             # Style the header row
             header_font = Font(bold=True, color="FFFFFF")
@@ -132,6 +165,71 @@ class OrderLogger:
             logger.exception(f"Failed to log order: {e}")
             return f"ORD_ERROR_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     
+    def export_orders(self, criteria: dict = None) -> str:
+        """
+        Export orders to a new Excel file with optional filtering.
+        
+        Args:
+            criteria (dict): Filter criteria (e.g., {'status': 'COMPLETED', 'date': '2025-10'})
+        
+        Returns:
+            str: Path to the exported file
+        """
+        try:
+            df = pd.read_excel(self.file_path)
+            
+            if criteria:
+                if 'status' in criteria:
+                    df = df[df['status'] == criteria['status']]
+                if 'date' in criteria:
+                    df = df[df['timestamp'].str.contains(criteria['date'])]
+                if 'customer' in criteria:
+                    mask = (df['customer_name'].str.contains(criteria['customer'], case=False, na=False) |
+                           df['customer_phone'].str.contains(criteria['customer'], case=False, na=False))
+                    df = df[mask]
+            
+            # Generate export filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_path = f"orders_export_{timestamp}.xlsx"
+            
+            # Export with styling
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Orders Export"
+            
+            # Write headers
+            headers = list(df.columns)
+            ws.append(headers)
+            
+            # Style headers
+            header_font = Font(bold=True, color="FFFFFF")
+            header_fill = PatternFill(start_color="2E8B57", end_color="2E8B57", fill_type="solid")
+            
+            for col, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center')
+                ws.column_dimensions[chr(64 + col)].width = 15
+            
+            # Write data
+            for row_idx, row in enumerate(df.values, 2):
+                for col_idx, value in enumerate(row, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    if col_idx == headers.index('status') + 1:  # Status column
+                        status = str(value).upper()
+                        if status == "COMPLETED":
+                            cell.fill = PatternFill(start_color="98FB98", end_color="98FB98", fill_type="solid")
+                        elif status == "CANCELLED":
+                            cell.fill = PatternFill(start_color="FFB6C1", end_color="FFB6C1", fill_type="solid")
+            
+            wb.save(export_path)
+            return export_path
+            
+        except Exception as e:
+            logger.exception(f"Failed to export orders: {e}")
+            return ""
+
     def update_order_status(self, order_id: str, status: str, admin_notes: str = "", processed_by: str = "") -> bool:
         """Update order status and add admin notes."""
         try:
