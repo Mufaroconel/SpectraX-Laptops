@@ -25,7 +25,7 @@ def handle_buy_laptops(whatsapp, phone_number: str, catalog_id: Optional[str] = 
         except Exception:
             logger.exception("Failed to send no-configured-laptops message")
         return
-
+ 
     header = "🔥 SpectraX Laptop Lineup"
     body = (
         "💻 Power that lasts. Protection that never quits.\n\n"
